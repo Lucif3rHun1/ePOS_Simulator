@@ -20,7 +20,7 @@ func Translate(data []byte, verbose bool) ([]byte, error) {
 func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error) {
 	eposBody := extractEposPrintBody(data)
 	if eposBody == "" {
-		return nil, fmt.Errorf("no epos-print content found in SOAP envelope")
+		return nil, fmt.Errorf("no epos-print content found")
 	}
 
 	var out []byte

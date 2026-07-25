@@ -6,7 +6,6 @@ import (
 )
 
 func TestParse(t *testing.T) {
-	// Simulate Odoo SOAP envelope
 	soap := `<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
@@ -52,21 +51,38 @@ func TestParse_SelfClosing(t *testing.T) {
 	}
 }
 
+func TestParse_RawXML(t *testing.T) {
+	raw := `<?xml version="1.0" encoding="UTF-8"?>
+<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+  <text>Raw Hello</text>
+  <feedline/>
+  <cut/>
+</epos-print>`
+
+	body, err := Parse([]byte(raw))
+	if err != nil {
+		t.Fatalf("Parse failed on raw XML: %v", err)
+	}
+	if !strings.Contains(body, "Raw Hello") {
+		t.Errorf("expected body to contain 'Raw Hello', got: %s", body)
+	}
+}
+
 func TestSuccessResponse(t *testing.T) {
 	resp := SuccessResponse
 	if !strings.Contains(resp, `success="true"`) {
 		t.Error("SuccessResponse missing success=\"true\"")
 	}
-	if !strings.Contains(resp, "status=\"252\"") {
+	if !strings.Contains(resp, `status="252"`) {
 		t.Error("SuccessResponse missing status=\"252\"")
 	}
-	if !strings.Contains(resp, "battery=\"0\"") {
+	if !strings.Contains(resp, `battery="0"`) {
 		t.Error("SuccessResponse missing battery=\"0\"")
 	}
 	if !strings.Contains(resp, "s:Envelope") {
 		t.Error("SuccessResponse missing SOAP envelope")
 	}
-	if !strings.Contains(resp, "xmlns=\"http://www.epson-pos.com/schemas/2011/03/epos-print\"") {
+	if !strings.Contains(resp, `xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print"`) {
 		t.Error("SuccessResponse missing epos-print namespace")
 	}
 }
@@ -118,5 +134,69 @@ func TestParse_MissingEposPrint(t *testing.T) {
 	_, err := Parse([]byte(soap))
 	if err == nil {
 		t.Error("expected error for missing epos-print element")
+	}
+}
+
+func TestDetectFormat_SOAP(t *testing.T) {
+	body := []byte(`<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><epos-print><text>x</text></epos-print></s:Body>
+</s:Envelope>`)
+	if got := DetectFormat(body); got != FormatSOAP {
+		t.Errorf("expected FormatSOAP, got %v", got)
+	}
+}
+
+func TestDetectFormat_Raw(t *testing.T) {
+	body := []byte(`<?xml version="1.0"?>
+<epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+  <text>Hi</text>
+</epos-print>`)
+	if got := DetectFormat(body); got != FormatRaw {
+		t.Errorf("expected FormatRaw, got %v", got)
+	}
+}
+
+func TestDetectFormat_Unknown(t *testing.T) {
+	body := []byte(`plain text no xml here`)
+	if got := DetectFormat(body); got != FormatUnknown {
+		t.Errorf("expected FormatUnknown, got %v", got)
+	}
+}
+
+func TestRawSuccessResponse(t *testing.T) {
+	resp := RawSuccessResponse
+	if !strings.Contains(resp, `success="true"`) {
+		t.Error("RawSuccessResponse missing success=\"true\"")
+	}
+	if strings.Contains(resp, "s:Envelope") {
+		t.Error("RawSuccessResponse must not include SOAP envelope")
+	}
+	if !strings.Contains(resp, `xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print"`) {
+		t.Error("RawSuccessResponse missing epos-print namespace")
+	}
+}
+
+func TestRawSuccessResponseBytes(t *testing.T) {
+	b := RawSuccessResponseBytes()
+	if len(b) == 0 {
+		t.Fatal("RawSuccessResponseBytes returned empty")
+	}
+	if strings.Contains(string(b), "s:Envelope") {
+		t.Error("RawSuccessResponseBytes must be bare XML, no SOAP envelope")
+	}
+}
+
+func TestRawErrorResponseBytes(t *testing.T) {
+	b := RawErrorResponseBytes("SchemaError")
+	s := string(b)
+	if !strings.Contains(s, "SchemaError") {
+		t.Error("RawErrorResponseBytes missing custom code")
+	}
+	if !strings.Contains(s, `success="false"`) {
+		t.Error("RawErrorResponseBytes missing success=\"false\"")
+	}
+	if strings.Contains(s, "s:Envelope") {
+		t.Error("RawErrorResponseBytes must be bare XML")
 	}
 }

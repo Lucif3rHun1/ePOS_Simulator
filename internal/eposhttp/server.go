@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"epos-emulator/internal/logging"
+	"epos-emulator/internal/soap"
 	"epos-emulator/internal/translate"
 	"epos-emulator/internal/winspool"
 )
@@ -18,7 +19,6 @@ func Handler(printerName string, verbose bool, allowDrawer bool) http.Handler {
 		verbose:     verbose,
 		allowDrawer: allowDrawer,
 	}
-	// Wrap with logging middleware. Verbose flag also enables body hex dumps.
 	if verbose {
 		return LoggingMiddlewareVerbose(h)
 	}
@@ -44,6 +44,7 @@ func (h *eposHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case http.MethodPost:
 			h.handleEpos(w, r)
 		default:
+			h.applyCORS(w, r)
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 		return
@@ -58,22 +59,21 @@ func (h *eposHandler) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *eposHandler) handlePreflight(w http.ResponseWriter, r *http.Request) {
-	// AC2: CORS preflight headers
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, SOAPAction")
-
-	// AC3: Private Network Access
-	if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
-		w.Header().Set("Access-Control-Allow-Private-Network", "true")
-	}
-
+	h.applyCORS(w, r)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
-	// CORS response headers (AC2)
+func (h *eposHandler) applyCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, SOAPAction")
+	if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+		w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	}
+}
+
+func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
+	h.applyCORS(w, r)
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -82,56 +82,68 @@ func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	logging.LogXML("XML RX", body)
+	logXML(r.Method, body)
+	format := soap.DetectFormat(body)
 
-	// Parse SOAP and translate to ESC/POS
 	escposBytes, err := translate.TranslateWithOptions(body, h.verbose, h.allowDrawer)
 	if err != nil {
 		logging.Error("translate failed", "err", err.Error(), "body_size", len(body))
-		h.sendSoapError(w, err.Error())
+		h.sendError(w, format, err.Error())
 		return
 	}
 
-	// Send to printer via spooler
 	if len(escposBytes) > 0 {
 		logging.LogESCPOS("ESCPOS TX", escposBytes)
 
 		hh, err := winspool.OpenPrinter(h.printerName)
 		if err != nil {
 			logging.Error("open printer failed", "printer", h.printerName, "err", err.Error())
-			h.sendSoapError(w, fmt.Sprintf("Printer open error: %v", err))
+			h.sendError(w, format, fmt.Sprintf("Printer open error: %v", err))
 			return
 		}
 		defer winspool.ClosePrinter(hh)
 
 		if err := winspool.PrintRaw(hh, "ePOS Emulator", escposBytes); err != nil {
 			logging.Error("print raw failed", "printer", h.printerName, "bytes", len(escposBytes), "err", err.Error())
-			h.sendSoapError(w, fmt.Sprintf("Printer error: %v", err))
+			h.sendError(w, format, fmt.Sprintf("Printer error: %v", err))
 			return
 		}
-		logging.Info("printed", "printer", h.printerName, "bytes", len(escposBytes))
+		logging.Info("printed", "printer", h.printerName, "bytes", len(escposBytes), "format", formatName(format))
 	}
 
-	// AC4: Send success response
-	h.sendSoapSuccess(w)
+	h.sendSuccess(w, format)
 }
 
-func (h *eposHandler) sendSoapSuccess(w http.ResponseWriter) {
+func (h *eposHandler) sendSuccess(w http.ResponseWriter, format soap.Format) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Body>
-    <response success="true" code="" status="252" battery="0" xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print"/>
-  </s:Body>
-</s:Envelope>`))
+	if format == soap.FormatRaw {
+		w.Write(soap.RawSuccessResponseBytes())
+		return
+	}
+	w.Write(soap.SuccessResponseBytes())
 }
 
-func (h *eposHandler) sendSoapError(w http.ResponseWriter, msg string) {
+func (h *eposHandler) sendError(w http.ResponseWriter, format soap.Format, code string) {
 	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	w.Write([]byte(fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
-  <s:Body>
-    <response success="false" code="EPSON_ERR_FAILURE" status="0" battery="0" xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print"/>
-  </s:Body>
-</s:Envelope>`)))
+	if format == soap.FormatRaw {
+		w.Write(soap.RawErrorResponseBytes(code))
+		return
+	}
+	w.Write(soap.ErrorResponseBytes(code))
+}
+
+func logXML(method string, body []byte) {
+	logging.LogXML("XML RX", body)
+	_ = method
+}
+
+func formatName(f soap.Format) string {
+	switch f {
+	case soap.FormatSOAP:
+		return "soap"
+	case soap.FormatRaw:
+		return "raw"
+	default:
+		return "unknown"
+	}
 }
