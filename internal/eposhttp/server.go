@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 
 	"epos-emulator/internal/logging"
@@ -14,11 +13,16 @@ import (
 
 // Handler returns an http.Handler implementing the ePOS HTTP server.
 func Handler(printerName string, verbose bool, allowDrawer bool) http.Handler {
-	return &eposHandler{
+	h := &eposHandler{
 		printerName: printerName,
 		verbose:     verbose,
 		allowDrawer: allowDrawer,
 	}
+	// Wrap with logging middleware. Verbose flag also enables body hex dumps.
+	if verbose {
+		return LoggingMiddlewareVerbose(h)
+	}
+	return LoggingMiddleware(h)
 }
 
 type eposHandler struct {
@@ -78,41 +82,34 @@ func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	if h.verbose {
-		log.Printf("[EPOS] Received %d bytes", len(body))
-		logging.LogXML(body)
-	}
+	logging.LogXML("XML RX", body)
 
 	// Parse SOAP and translate to ESC/POS
 	escposBytes, err := translate.TranslateWithOptions(body, h.verbose, h.allowDrawer)
 	if err != nil {
-		log.Printf("[EPOS] Translate error: %v", err)
+		logging.Error("translate failed", "err", err.Error(), "body_size", len(body))
 		h.sendSoapError(w, err.Error())
 		return
 	}
 
 	// Send to printer via spooler
 	if len(escposBytes) > 0 {
-		if h.verbose {
-			logging.LogESCPOS(escposBytes)
-		}
+		logging.LogESCPOS("ESCPOS TX", escposBytes)
 
 		hh, err := winspool.OpenPrinter(h.printerName)
 		if err != nil {
-			log.Printf("[EPOS] OpenPrinter error: %v", err)
+			logging.Error("open printer failed", "printer", h.printerName, "err", err.Error())
 			h.sendSoapError(w, fmt.Sprintf("Printer open error: %v", err))
 			return
 		}
 		defer winspool.ClosePrinter(hh)
 
 		if err := winspool.PrintRaw(hh, "ePOS Emulator", escposBytes); err != nil {
-			log.Printf("[EPOS] PrintRaw error: %v", err)
+			logging.Error("print raw failed", "printer", h.printerName, "bytes", len(escposBytes), "err", err.Error())
 			h.sendSoapError(w, fmt.Sprintf("Printer error: %v", err))
 			return
 		}
-		if h.verbose {
-			log.Printf("[EPOS] Sent %d bytes to printer", len(escposBytes))
-		}
+		logging.Info("printed", "printer", h.printerName, "bytes", len(escposBytes))
 	}
 
 	// AC4: Send success response
