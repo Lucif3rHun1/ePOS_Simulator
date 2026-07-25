@@ -51,6 +51,14 @@ type printerInfo2W struct {
 
 // EnumPrinters lists all printers visible to the local spooler.
 // Uses EnumPrintersW with PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS.
+//
+// Note: we previously tried to bounds-check the string pointers EnumPrintersW
+// returns against the buffer we passed in. That was too strict: Windows
+// printer drivers can hand back pointers to memory they manage themselves
+// (not into our buffer), and those pointers are still valid UTF-16 strings.
+// Bounds-checking dropped every printer on some real machines, leaving the
+// picker empty. Now we trust the pointer and rely on recover() to catch the
+// rare case where a driver returns a truly unreadable address.
 func EnumPrinters() ([]PrinterInfo, error) {
 	const (
 		PRINTER_ENUM_LOCAL       = 0x00000002
@@ -97,22 +105,20 @@ func EnumPrinters() ([]PrinterInfo, error) {
 	defaultName := getDefaultPrinterName()
 	infos := make([]PrinterInfo, 0, returned)
 
-	// Capture buffer bounds so we can validate the pointers EnumPrintersW
-	// hands us. If a printer driver returns a pointer that does not point
-	// inside this buffer, the call to UTF16PtrToString will fault. We saw
-	// this on a real Windows machine: pPrinterName was 0x100001a40 (a
-	// non-nil, non-readable address) and crashed the process at startup.
-	bufStart := uintptr(unsafe.Pointer(&buf[0]))
-	bufEnd := bufStart + uintptr(len(buf))
-
-	safeStr := func(p *uint16) string {
+	// safeStr reads a NUL-terminated UTF-16 string from p. UTF16PtrToString
+	// will fault if p points to unreadable memory; recover() turns that into
+	// an empty string so one misbehaving printer driver doesn't kill the
+	// whole enumeration. The recovered printer shows up with an empty Name
+	// (and gets dropped by filterEmpty in the picker).
+	safeStr := func(p *uint16) (out string) {
 		if p == nil {
 			return ""
 		}
-		addr := uintptr(unsafe.Pointer(p))
-		if addr < bufStart || addr >= bufEnd {
-			return ""
-		}
+		defer func() {
+			if recover() != nil {
+				out = ""
+			}
+		}()
 		return windows.UTF16PtrToString(p)
 	}
 
@@ -161,9 +167,10 @@ func FormatList(infos []PrinterInfo) string {
 	if len(infos) == 0 {
 		return "No printers found.\n"
 	}
+	const nameCol = 55
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%-4s %-9s %-40s %-20s\n", "#", "Default", "Name", "Port"))
-	sb.WriteString(strings.Repeat("-", 80) + "\n")
+	sb.WriteString(fmt.Sprintf("%-4s %-9s %-55s %-20s\n", "#", "Default", "Name", "Port"))
+	sb.WriteString(strings.Repeat("-", 95) + "\n")
 	for i, p := range infos {
 		marker := ""
 		if p.IsDefault {
@@ -174,10 +181,10 @@ func FormatList(infos []PrinterInfo) string {
 			port = port[:17] + "..."
 		}
 		name := p.Name
-		if len(name) > 55 {
-			name = name[:52] + "..."
+		if len(name) > nameCol {
+			name = name[:nameCol-3] + "..."
 		}
-		sb.WriteString(fmt.Sprintf("%-4d %-9s %-40s %-20s\n", i+1, marker, name, port))
+		sb.WriteString(fmt.Sprintf("%-4d %-9s %-55s %-20s\n", i+1, marker, name, port))
 	}
 	return sb.String()
 }
