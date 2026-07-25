@@ -174,8 +174,8 @@ func FormatList(infos []PrinterInfo) string {
 			port = port[:17] + "..."
 		}
 		name := p.Name
-		if len(name) > 40 {
-			name = name[:37] + "..."
+		if len(name) > 55 {
+			name = name[:52] + "..."
 		}
 		sb.WriteString(fmt.Sprintf("%-4d %-9s %-40s %-20s\n", i+1, marker, name, port))
 	}

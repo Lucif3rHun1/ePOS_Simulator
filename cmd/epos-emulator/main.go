@@ -82,7 +82,7 @@ func main() {
 	defer logging.Close()
 
 	logging.Info("starting",
-		"version", "1.1.0",
+		"version", "1.1.2",
 		"platform", logging.Platform(),
 		"verbose", flagVerbose,
 		"log_file", flagLogFile,
