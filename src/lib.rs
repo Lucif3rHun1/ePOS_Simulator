@@ -9,7 +9,6 @@
 //! - [`winspool`] — Windows spooler RAW print + interactive picker
 //! - [`http`]    — axum HTTP server with CORS/PNA/health/print endpoints
 //! - [`logging`] — structured tracing-based logger with rotation
-//! - [`tls`]     — self-signed certificate generation (rustls + rcgen)
 //! - [`netinfo`] — enumerate local IPv4 addresses for the startup banner
 //! - [`cli`]     — `clap` definitions + main entry point
 
@@ -23,6 +22,5 @@ pub mod logging;
 pub mod netinfo;
 pub mod picker;
 pub mod soap;
-pub mod tls;
 pub mod translate;
 pub mod winspool;

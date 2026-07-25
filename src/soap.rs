@@ -97,10 +97,7 @@ fn extract(data: &[u8]) -> Option<String> {
     let content_start = start + tag_end + 1;
     let content = &s[content_start..];
     if let Some(end) = content.find("</epos-print>") {
-        return Some(content[..end].trim_end_matches("/>").to_string());
-    }
-    if let Some(end) = content.find("/>") {
-        return Some(content[..end].trim_end_matches("/>").to_string());
+        return Some(content[..end].to_string());
     }
     Some(content.to_string())
 }
@@ -172,7 +169,7 @@ mod tests {
     fn parse_handles_self_closing() {
         let body = br#"<epos-print xmlns="x"><cut/></epos-print>"#;
         let inner = parse(body).expect("parse");
-        assert_eq!(inner, "<cut");
+        assert_eq!(inner, "<cut/>");
     }
 
     #[test]

@@ -10,7 +10,6 @@ use crate::eposhttp::{self, AppConfig};
 use crate::logging::{self, Config as LogConfig};
 use crate::netinfo;
 use crate::picker::{self, Picker};
-use crate::tls;
 use crate::winspool;
 
 /// ePOS Printer Emulator for Odoo Online POS.
@@ -167,15 +166,10 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
     let app = eposhttp::router(cfg);
 
     if args.tls {
-        // TLS support is wired (cert gen, parser, acceptor builder) but the
-        // tokio-rustls + axum 0.7 serve_connection plumbing is not yet
-        // ported in v2.0.0. Until then, --tls falls back to plain HTTP.
-        // Users who need TLS should terminate it at a reverse proxy.
-        tracing::warn!(target: "startup", "--tls is not yet implemented in the Rust port; serving plain HTTP");
-        axum::serve(listener, app.into_make_service()).await?;
-    } else {
-        axum::serve(listener, app.into_make_service()).await?;
+        anyhow::bail!("--tls is not yet wired in the Rust port (rustls/aws-lc cross-build issue). v2.0.0 dev binary is HTTP-only.");
     }
+    axum::serve(listener, app.into_make_service()).await?;
+
     Ok(ExitCode::SUCCESS)
 }
 
