@@ -10,7 +10,7 @@ import (
 )
 
 func TestHandler_HealthEndpoint(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -23,7 +23,7 @@ func TestHandler_HealthEndpoint(t *testing.T) {
 }
 
 func TestHandler_OptionsCorsHeaders(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodOptions, "/cgi-bin/epos/service.cgi", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -42,7 +42,7 @@ func TestHandler_OptionsCorsHeaders(t *testing.T) {
 }
 
 func TestHandler_PnaHeaders(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodOptions, "/cgi-bin/epos/service.cgi", nil)
 	req.Header.Set("Access-Control-Request-Private-Network", "true")
 	w := httptest.NewRecorder()
@@ -53,7 +53,7 @@ func TestHandler_PnaHeaders(t *testing.T) {
 }
 
 func TestHandler_PnaHeaders_NotSetWhenNotRequested(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodOptions, "/cgi-bin/epos/service.cgi", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -63,7 +63,7 @@ func TestHandler_PnaHeaders_NotSetWhenNotRequested(t *testing.T) {
 }
 
 func TestHandler_PostEndpoint_SOAPEnvelope(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	body := `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
   <s:Body>
@@ -86,7 +86,7 @@ func TestHandler_PostEndpoint_SOAPEnvelope(t *testing.T) {
 }
 
 func TestHandler_PostEndpoint_RawXML(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	body := `<?xml version="1.0" encoding="utf-8"?>
 <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
   <text>Hi from raw</text>
@@ -108,7 +108,7 @@ func TestHandler_PostEndpoint_RawXML(t *testing.T) {
 }
 
 func TestHandler_NotFound(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -118,7 +118,7 @@ func TestHandler_NotFound(t *testing.T) {
 }
 
 func TestHandler_MethodNotAllowed(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodPut, "/cgi-bin/epos/service.cgi", nil)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
@@ -128,7 +128,7 @@ func TestHandler_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHandler_InvalidRequestBody(t *testing.T) {
-	h := Handler("", false, false)
+	h := Handler("", false, false, false)
 	req := httptest.NewRequest(http.MethodPost, "/cgi-bin/epos/service.cgi", bytes.NewBufferString("not xml"))
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
