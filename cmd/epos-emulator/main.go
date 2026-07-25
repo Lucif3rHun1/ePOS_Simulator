@@ -3,33 +3,37 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"epos-emulator/internal/eposhttp"
 	"epos-emulator/internal/escpos"
 	"epos-emulator/internal/logging"
+	"epos-emulator/internal/netinfo"
 	"epos-emulator/internal/tls"
 	"epos-emulator/internal/winspool"
 )
 
 var (
-	flagPort        int
-	flagPrinter     string
-	flagTLS         bool
-	flagCertFile    string
-	flagKeyFile     string
-	flagVerbose     bool
-	flagSelftest    bool
-	flagDrawer      bool
-	flagPaperWidth  int
-	flagCodepage    string
-	flagLogFile     string
+	flagPort         int
+	flagPrinter      string
+	flagTLS          bool
+	flagCertFile     string
+	flagKeyFile      string
+	flagVerbose      bool
+	flagSelftest     bool
+	flagDrawer       bool
+	flagPaperWidth   int
+	flagCodepage     string
+	flagLogFile      string
 	flagListPrinters bool
-	flagMaxLogBytes int64
-	flagMaxBackups  int
+	flagMaxLogBytes  int64
+	flagMaxBackups   int
 )
 
 func init() {
@@ -86,7 +90,6 @@ func main() {
 		os.Exit(runSelftest())
 	}
 
-	// Trap SIGINT/SIGTERM for graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -98,12 +101,19 @@ func main() {
 
 	handler := eposhttp.Handler(flagPrinter, flagVerbose, flagDrawer)
 	addr := fmt.Sprintf(":%d", flagPort)
+	scheme := "http"
+	if flagTLS {
+		scheme = "https"
+	}
 
 	if flagPrinter == "" {
 		logging.Info("using system default printer")
 	} else {
 		logging.Info("printer selected", "name", flagPrinter)
 	}
+
+	printStartupBanner(scheme, addr)
+
 	logging.Info("listening",
 		"addr", addr,
 		"tls", flagTLS,
@@ -111,7 +121,6 @@ func main() {
 		"drawer_enabled", flagDrawer,
 	)
 
-	// Load or generate TLS cert (T5)
 	if flagTLS && flagCertFile == "" {
 		flagCertFile = "cert.pem"
 		flagKeyFile = "key.pem"
@@ -122,18 +131,91 @@ func main() {
 		logging.Info("generated self-signed cert", "cert", flagCertFile, "key", flagKeyFile)
 	}
 
-	var err error
-	if flagTLS {
-		logging.Info("https mode", "addr", addr, "cert", flagCertFile)
-		err = http.ListenAndServeTLS(addr, flagCertFile, flagKeyFile, handler)
-	} else {
-		logging.Info("http mode", "addr", addr)
-		err = http.ListenAndServe(addr, handler)
-	}
+	// Run server in a goroutine so we can probe health after start.
+	errCh := make(chan error, 1)
+	go func() {
+		var err error
+		if flagTLS {
+			logging.Info("https mode", "addr", addr, "cert", flagCertFile)
+			err = http.ListenAndServeTLS(addr, flagCertFile, flagKeyFile, handler)
+		} else {
+			logging.Info("http mode", "addr", addr)
+			err = http.ListenAndServe(addr, handler)
+		}
+		errCh <- err
+	}()
 
-	if err != nil {
+	// Probe health endpoint to confirm server actually started.
+	verifyHealth(scheme, addr)
+
+	if err := <-errCh; err != nil {
 		logging.Error("server error", "err", err.Error())
 		os.Exit(1)
+	}
+}
+
+func printStartupBanner(scheme, addr string) {
+	var sb strings.Builder
+	fmt.Fprintln(&sb, "")
+	fmt.Fprintln(&sb, "============================================================")
+	fmt.Fprintln(&sb, "  ePOS Printer Emulator for Odoo Online POS")
+	fmt.Fprintln(&sb, "============================================================")
+	fmt.Fprintf(&sb, "  Platform : %s\n", logging.Platform())
+	fmt.Fprintf(&sb, "  PID      : %d\n", os.Getpid())
+	fmt.Fprintf(&sb, "  Printer  : %s\n", printerLabel())
+	fmt.Fprintf(&sb, "  Paper    : %d dots\n", flagPaperWidth)
+	fmt.Fprintf(&sb, "  Drawer   : %v\n", flagDrawer)
+	fmt.Fprintf(&sb, "  TLS      : %v\n", flagTLS)
+	fmt.Fprintf(&sb, "  Verbose  : %v\n", flagVerbose)
+	fmt.Fprintf(&sb, "  Log file : %s\n", logFileLabel())
+	fmt.Fprintln(&sb, "")
+	fmt.Fprintln(&sb, "  API endpoints:")
+	fmt.Fprintf(&sb, "    GET  /                          (health check, returns JSON)\n")
+	fmt.Fprintf(&sb, "    POST /cgi-bin/epos/service.cgi  (ePOS XML, Odoo POS target)\n")
+	fmt.Fprintln(&sb, "")
+	fmt.Fprintln(&sb, "  Listening on (port = flag --port):")
+	fmt.Fprint(&sb, netinfo.FormatBanner(addr))
+	fmt.Fprintln(&sb, "")
+	fmt.Fprintln(&sb, "  Odoo POS IoT Printer URL: copy any IP/port above into")
+	fmt.Fprintln(&sb, "  Settings > Point of Sale > Printers > Printer IP.")
+	fmt.Fprintln(&sb, "============================================================")
+	fmt.Fprintln(&sb, "")
+
+	os.Stderr.WriteString(sb.String())
+}
+
+func printerLabel() string {
+	if flagPrinter == "" {
+		return "(system default)"
+	}
+	return flagPrinter
+}
+
+func logFileLabel() string {
+	if flagLogFile == "" {
+		return "(stderr only)"
+	}
+	return flagLogFile
+}
+
+func verifyHealth(scheme, addr string) {
+	time.Sleep(150 * time.Millisecond)
+	url := scheme + "://127.0.0.1" + addr + "/"
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		logging.Warn("health check failed", "url", url, "err", err.Error())
+		fmt.Fprintf(os.Stderr, "  [WARN] Health check failed: %v\n\n", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == 200 && strings.Contains(string(body), `"status":"ok"`) {
+		logging.Info("health check passed", "url", url, "status", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "  [OK] Health endpoint responds: %s -> %s\n\n", url, strings.TrimSpace(string(body)))
+	} else {
+		logging.Warn("health check unexpected", "url", url, "status", resp.StatusCode, "body", string(body))
+		fmt.Fprintf(os.Stderr, "  [WARN] Health check returned %d: %s\n\n", resp.StatusCode, string(body))
 	}
 }
 
@@ -155,11 +237,10 @@ func runSelftest() int {
 	data := escpos.SelfTestBytes()
 	fmt.Printf("ESC/POS bytes (%d): %x\n", len(data), data)
 
-	// Try to send to printer on Windows
 	hh, err := winspool.OpenPrinter(flagPrinter)
 	if err != nil {
 		fmt.Printf("NOTE: Spooler unavailable on this platform: %v\n", err)
-		logging.Info("selftest dry run (non-Windows or no printer)", "err", err.Error())
+		logging.Info("selftest dry run", "err", err.Error())
 		fmt.Println("Self-test passed (dry run).")
 		return 0
 	}
