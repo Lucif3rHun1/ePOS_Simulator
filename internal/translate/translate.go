@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -11,13 +12,41 @@ import (
 	"epos-emulator/internal/escpos"
 )
 
-// Translate parses ePOS-Print XML and produces ESC/POS byte stream.
-func Translate(data []byte, verbose bool) ([]byte, error) {
-	return TranslateWithOptions(data, verbose, false)
+// ErrUnknownElement is returned in strict mode when an epos-print child
+// element is not recognized.
+var ErrUnknownElement = errors.New("unknown epos-print element")
+
+// Options controls translation behavior.
+type Options struct {
+	Verbose     bool
+	AllowDrawer bool
+	StrictXML   bool
 }
 
-// TranslateWithOptions parses with drawer gating.
+// Translate parses ePOS-Print XML and produces ESC/POS byte stream.
+func Translate(data []byte, verbose bool) ([]byte, error) {
+	return TranslateWithFullOptions(data, Options{Verbose: verbose})
+}
+
+// TranslateWithOptions parses with drawer gating (backward-compatible signature).
 func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error) {
+	return TranslateWithFullOptions(data, Options{
+		Verbose:     verbose,
+		AllowDrawer: allowDrawer,
+	})
+}
+
+// TranslateStrict parses with drawer gating and strict XML mode.
+func TranslateStrict(data []byte, verbose, allowDrawer, strictXML bool) ([]byte, error) {
+	return TranslateWithFullOptions(data, Options{
+		Verbose:     verbose,
+		AllowDrawer: allowDrawer,
+		StrictXML:   strictXML,
+	})
+}
+
+// TranslateWithFullOptions is the canonical entry point with all flags.
+func TranslateWithFullOptions(data []byte, opts Options) ([]byte, error) {
 	eposBody := extractEposPrintBody(data)
 	if eposBody == "" {
 		return nil, fmt.Errorf("no epos-print content found")
@@ -39,6 +68,8 @@ func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error
 		switch t := token.(type) {
 		case xml.StartElement:
 			switch t.Name.Local {
+			case "epos-print", "root", "parameter":
+				// wrapper elements - just recurse into children
 			case "text":
 				handleText(decoder, t, &out)
 
@@ -52,7 +83,7 @@ func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error
 				handleImage(t, &out)
 
 			case "drawer":
-				if allowDrawer {
+				if opts.AllowDrawer {
 					out = append(out, escpos.Drawer(100, 250)...)
 				}
 
@@ -61,6 +92,23 @@ func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error
 
 			case "symbol":
 				handleSymbol(t, decoder, &out)
+
+			case "pulse":
+				// odoo/epos-proxy drawer pulse: ESC = 0x01 then ESC p 0 25 25 then ESC p 1 25 25
+				if opts.AllowDrawer {
+					out = append(out, 0x1B, 0x3D, 0x01)
+					out = append(out, escpos.Drawer(25, 25)...)
+					out = append(out, 0x1B, 0x70, 0x01, 25, 25)
+				}
+
+			default:
+				if opts.StrictXML {
+					return nil, fmt.Errorf("%w: <%s>", ErrUnknownElement, t.Name.Local)
+				}
+				// Lenient: skip element subtree
+				if err := decoder.Skip(); err != nil {
+					return nil, fmt.Errorf("skip unknown element <%s>: %w", t.Name.Local, err)
+				}
 			}
 		}
 	}
@@ -69,7 +117,6 @@ func TranslateWithOptions(data []byte, verbose, allowDrawer bool) ([]byte, error
 }
 
 func handleText(decoder *xml.Decoder, t xml.StartElement, out *[]byte) {
-	// Extract align attribute if present
 	var align byte = 0
 	for _, attr := range t.Attr {
 		if attr.Name.Local == "align" {
@@ -103,7 +150,6 @@ func handleText(decoder *xml.Decoder, t xml.StartElement, out *[]byte) {
 		}
 	}
 
-	// Reset alignment
 	if align != 0 {
 		*out = append(*out, escpos.Align(0)...)
 	}
@@ -142,7 +188,7 @@ func handleImage(t xml.StartElement, out *[]byte) {
 }
 
 func handleBarcode(t xml.StartElement, decoder *xml.Decoder, out *[]byte) {
-	var barcodeType byte = 0 // GS k type 0 = UPC-A
+	var barcodeType byte = 8 // CODE128 default
 	var width byte = 3
 	var height byte = 100
 	var data string
@@ -164,7 +210,6 @@ func handleBarcode(t xml.StartElement, decoder *xml.Decoder, out *[]byte) {
 			data = attr.Value
 		}
 	}
-	// Also check chardata if no data attr
 	if data == "" {
 		var elem struct {
 			Chardata string `xml:",chardata"`
@@ -198,12 +243,12 @@ func parseBarcodeType(s string) byte {
 	case "CODE128":
 		return 8
 	default:
-		return 8 // CODE128 as safe default
+		return 8
 	}
 }
 
 func handleSymbol(t xml.StartElement, decoder *xml.Decoder, out *[]byte) {
-	var eccLevel byte = 3 // Q
+	var eccLevel byte = 3
 	var data string
 	for _, attr := range t.Attr {
 		switch attr.Name.Local {

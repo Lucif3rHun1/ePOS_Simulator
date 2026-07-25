@@ -13,11 +13,14 @@ import (
 )
 
 // Handler returns an http.Handler implementing the ePOS HTTP server.
-func Handler(printerName string, verbose bool, allowDrawer bool) http.Handler {
+// strictXML causes unknown ePOS-Print elements to be rejected (matching
+// odoo/epos-proxy behavior) instead of silently ignored.
+func Handler(printerName string, verbose, allowDrawer, strictXML bool) http.Handler {
 	h := &eposHandler{
 		printerName: printerName,
 		verbose:     verbose,
 		allowDrawer: allowDrawer,
+		strictXML:   strictXML,
 	}
 	if verbose {
 		return LoggingMiddlewareVerbose(h)
@@ -29,6 +32,7 @@ type eposHandler struct {
 	printerName string
 	verbose     bool
 	allowDrawer bool
+	strictXML   bool
 }
 
 func (h *eposHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -85,10 +89,10 @@ func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
 	logXML(r.Method, body)
 	format := soap.DetectFormat(body)
 
-	escposBytes, err := translate.TranslateWithOptions(body, h.verbose, h.allowDrawer)
+	escposBytes, err := translate.TranslateStrict(body, h.verbose, h.allowDrawer, h.strictXML)
 	if err != nil {
 		logging.Error("translate failed", "err", err.Error(), "body_size", len(body))
-		h.sendError(w, format, err.Error())
+		soap.Write(w, format, soap.KindError, err.Error())
 		return
 	}
 
@@ -98,38 +102,20 @@ func (h *eposHandler) handleEpos(w http.ResponseWriter, r *http.Request) {
 		hh, err := winspool.OpenPrinter(h.printerName)
 		if err != nil {
 			logging.Error("open printer failed", "printer", h.printerName, "err", err.Error())
-			h.sendError(w, format, fmt.Sprintf("Printer open error: %v", err))
+			soap.Write(w, format, soap.KindError, fmt.Sprintf("Printer open error: %v", err))
 			return
 		}
 		defer winspool.ClosePrinter(hh)
 
 		if err := winspool.PrintRaw(hh, "ePOS Emulator", escposBytes); err != nil {
 			logging.Error("print raw failed", "printer", h.printerName, "bytes", len(escposBytes), "err", err.Error())
-			h.sendError(w, format, fmt.Sprintf("Printer error: %v", err))
+			soap.Write(w, format, soap.KindError, fmt.Sprintf("Printer error: %v", err))
 			return
 		}
 		logging.Info("printed", "printer", h.printerName, "bytes", len(escposBytes), "format", formatName(format))
 	}
 
-	h.sendSuccess(w, format)
-}
-
-func (h *eposHandler) sendSuccess(w http.ResponseWriter, format soap.Format) {
-	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	if format == soap.FormatRaw {
-		w.Write(soap.RawSuccessResponseBytes())
-		return
-	}
-	w.Write(soap.SuccessResponseBytes())
-}
-
-func (h *eposHandler) sendError(w http.ResponseWriter, format soap.Format, code string) {
-	w.Header().Set("Content-Type", "text/xml; charset=utf-8")
-	if format == soap.FormatRaw {
-		w.Write(soap.RawErrorResponseBytes(code))
-		return
-	}
-	w.Write(soap.ErrorResponseBytes(code))
+	soap.Write(w, format, soap.KindSuccess, "")
 }
 
 func logXML(method string, body []byte) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,11 +35,13 @@ var (
 	flagListPrinters bool
 	flagMaxLogBytes  int64
 	flagMaxBackups   int
+	flagStrictXML    bool
+	flagInteractive  bool
 )
 
 func init() {
 	flag.IntVar(&flagPort, "port", 8080, "HTTP(S) listen port")
-	flag.StringVar(&flagPrinter, "printer", "", "Printer name (use --list-printers to see options; empty=system default)")
+	flag.StringVar(&flagPrinter, "printer", "", "Printer name (use --list-printers to see options; empty=interactive pick)")
 	flag.BoolVar(&flagTLS, "tls", false, "Enable HTTPS with self-signed cert")
 	flag.StringVar(&flagCertFile, "cert", "", "TLS certificate file (PEM)")
 	flag.StringVar(&flagKeyFile, "key", "", "TLS private key file (PEM)")
@@ -51,6 +54,8 @@ func init() {
 	flag.BoolVar(&flagListPrinters, "list-printers", false, "List installed printers and exit")
 	flag.Int64Var(&flagMaxLogBytes, "max-log-bytes", 10*1024*1024, "Log rotation size threshold in bytes")
 	flag.IntVar(&flagMaxBackups, "max-log-backups", 3, "Number of rotated log backups to keep (.1, .2, .N)")
+	flag.BoolVar(&flagStrictXML, "strict-xml", false, "Reject unknown ePOS-Print XML elements instead of ignoring")
+	flag.BoolVar(&flagInteractive, "interactive", true, "When --printer is empty, prompt user to select from enumerated printers")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "ePOS Printer Emulator for Odoo Online POS\n\n")
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags]\n\n", os.Args[0])
@@ -60,6 +65,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "  %s --port 8080 --printer \"EPSON TM-T20\"\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --tls --verbose --log-file epos.log\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s --selftest --printer \"EPSON TM-T20\"\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --strict-xml  # reject unknown elements like odoo/epos-proxy\n", os.Args[0])
 	}
 }
 
@@ -76,7 +82,7 @@ func main() {
 	defer logging.Close()
 
 	logging.Info("starting",
-		"version", "1.0.0",
+		"version", "1.1.0",
 		"platform", logging.Platform(),
 		"verbose", flagVerbose,
 		"log_file", flagLogFile,
@@ -90,6 +96,23 @@ func main() {
 		os.Exit(runSelftest())
 	}
 
+	// Resolve printer name. If --printer is empty and stdin is interactive,
+	// list printers and prompt. If non-interactive (CI, piped), fall back to
+	// empty = system default.
+	if flagPrinter == "" && flagInteractive && winspool.IsInteractive() {
+		picked, err := winspool.InteractivePicker{
+			In:       os.Stdin,
+			Out:      os.Stderr,
+			Fallback: "",
+		}.Pick()
+		if err == nil && picked != "" {
+			flagPrinter = picked
+			logging.Info("printer picked interactively", "name", picked)
+		} else if err != nil && !errors.Is(err, winspool.ErrUserCancelled) {
+			logging.Warn("interactive pick failed", "err", err.Error())
+		}
+	}
+
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -99,7 +122,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	handler := eposhttp.Handler(flagPrinter, flagVerbose, flagDrawer)
+	handler := eposhttp.Handler(flagPrinter, flagVerbose, flagDrawer, flagStrictXML)
 	addr := fmt.Sprintf(":%d", flagPort)
 	scheme := "http"
 	if flagTLS {
@@ -119,6 +142,7 @@ func main() {
 		"tls", flagTLS,
 		"paper_width", flagPaperWidth,
 		"drawer_enabled", flagDrawer,
+		"strict_xml", flagStrictXML,
 	)
 
 	if flagTLS && flagCertFile == "" {
@@ -131,7 +155,6 @@ func main() {
 		logging.Info("generated self-signed cert", "cert", flagCertFile, "key", flagKeyFile)
 	}
 
-	// Run server in a goroutine so we can probe health after start.
 	errCh := make(chan error, 1)
 	go func() {
 		var err error
@@ -145,7 +168,6 @@ func main() {
 		errCh <- err
 	}()
 
-	// Probe health endpoint to confirm server actually started.
 	verifyHealth(scheme, addr)
 
 	if err := <-errCh; err != nil {
@@ -167,6 +189,7 @@ func printStartupBanner(scheme, addr string) {
 	fmt.Fprintf(&sb, "  Drawer   : %v\n", flagDrawer)
 	fmt.Fprintf(&sb, "  TLS      : %v\n", flagTLS)
 	fmt.Fprintf(&sb, "  Verbose  : %v\n", flagVerbose)
+	fmt.Fprintf(&sb, "  Strict   : %v\n", flagStrictXML)
 	fmt.Fprintf(&sb, "  Log file : %s\n", logFileLabel())
 	fmt.Fprintln(&sb, "")
 	fmt.Fprintln(&sb, "  API endpoints:")
