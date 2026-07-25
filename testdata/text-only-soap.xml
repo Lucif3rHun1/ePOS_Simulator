@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Wody>
+    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+      <parameter><devid>local_printer</devid><timeout>60000</timeout></parameter>
+      <text>Hello World</text>
+      <feedline/>
+      <cut/>
+    </epos-print>
+  </s:Body>
+</s:Envelope>

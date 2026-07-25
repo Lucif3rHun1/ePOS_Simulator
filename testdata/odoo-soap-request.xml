@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/SOAP/envelope">
+  <s:Body>
+    <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+      <parameter>
+        <devid>local_printer</devid>
+        <timeout>10000</timeout>
+      </parameter>
+      <text>
+        <line>
+          <content>Test Receipt</content>
+        </line>
+        <line>
+          <content>Line 2</content>
+        </line>
+      </text>
+      <feedline/>
+      <cut/>
+    </epos-print>
+  </s:Body>
+</s:Envelope>

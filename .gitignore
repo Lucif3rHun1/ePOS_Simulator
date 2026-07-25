@@ -1,0 +1,34 @@
+# Build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Cross-compile output
+/dist/
+/build/
+
+# Agent / orchestration state (not part of the source)
+.omc/
+.omo/
+.sisyphus/
+.opencode/
+
+# Local env
+.env
+.env.local
+
+# macOS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Code graph index
+.codegraph/
