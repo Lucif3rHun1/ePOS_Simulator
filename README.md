@@ -12,7 +12,29 @@ Odoo Online POS sends receipts directly to the printer's IP address via ePOS-Pri
 - A receipt printer installed with a Windows driver (Epson TM-T20III or compatible)
 - Odoo POS configured with the printer's IP pointing to this emulator (e.g., `127.0.0.1` or `localhost`)
 
-## Building
+## Installation
+
+### Download pre-built binary
+
+Latest release: <https://github.com/Lucif3rHun1/ePOS_Simulator/releases/latest>
+
+> **Browser warning:** Chrome and Edge flag unfamiliar `.exe` downloads as "not commonly downloaded" or "can harm your computer". This is a reputation check, not a malware detection. Click **Keep** / **Keep anyway** to proceed. To bypass the browser entirely, use PowerShell or `curl`:
+
+```powershell
+# Windows PowerShell — downloads without browser scan
+Invoke-WebRequest -Uri "https://github.com/Lucif3rHun1/ePOS_Simulator/releases/latest/download/epos-emulator.exe" -OutFile "epos-emulator.exe"
+Unblock-File .\epos-emulator.exe       # removes Zone.Identifier (alternative to "Keep anyway")
+.\epos-emulator.exe --selftest
+```
+
+```bash
+# macOS / Linux - same binary, useful for testing the HTTP server
+curl -L -o epos-emulator.exe https://github.com/Lucif3rHun1/ePOS_Simulator/releases/latest/download/epos-emulator.exe
+```
+
+If Windows Defender quarantines the file (rare): open **Windows Security -> Virus & threat protection -> Protection history** and check **Allow on device**, then submit the file at <https://www.microsoft.com/en-us/wdsi/filesubmission> as a false positive.
+
+## Building from source
 
 Requires Go 1.21+ on any platform. Cross-compile for Windows:
 
