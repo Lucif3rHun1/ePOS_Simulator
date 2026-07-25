@@ -37,22 +37,44 @@ func (p InteractivePicker) Pick() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("enumerate printers: %w", err)
 	}
+	return pickFromInfos(filterEmpty(infos), p.In, p.Out, p.Fallback)
+}
+
+// filterEmpty drops PrinterInfo records whose Name is empty. Such records
+// come from EnumPrintersW returning a bad pointer (Windows printer driver
+// bug) — our bounds-check in winspool_enum.go converts that to "" instead
+// of crashing. A printer with no name is unusable to the user (cannot be
+// referenced by name, looks like a blank row in the picker) so we hide it.
+func filterEmpty(infos []PrinterInfo) []PrinterInfo {
+	out := make([]PrinterInfo, 0, len(infos))
+	for _, inf := range infos {
+		if inf.Name != "" {
+			out = append(out, inf)
+		}
+	}
+	return out
+}
+
+// pickFromInfos is the testable core of InteractivePicker. It assumes
+// infos has already been filtered (e.g. via filterEmpty). Exposed for
+// unit tests; production code goes through InteractivePicker.Pick.
+func pickFromInfos(infos []PrinterInfo, in io.Reader, out io.Writer, fallback string) (string, error) {
 	if len(infos) == 0 {
-		return p.Fallback, nil
+		return fallback, nil
 	}
-	if p.Out != nil {
-		fmt.Fprintln(p.Out, "")
-		fmt.Fprintln(p.Out, "Available printers:")
-		fmt.Fprint(p.Out, FormatList(infos))
-		fmt.Fprintln(p.Out, "")
-		fmt.Fprintln(p.Out, "No --printer flag given. Enter the number to select,")
-		fmt.Fprintln(p.Out, "or press Enter to use the default (marked with *).")
-		fmt.Fprint(p.Out, "> ")
+	if out != nil {
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "Available printers:")
+		fmt.Fprint(out, FormatList(infos))
+		fmt.Fprintln(out, "")
+		fmt.Fprintln(out, "No --printer flag given. Enter the number to select,")
+		fmt.Fprintln(out, "or press Enter to use the default (marked with *).")
+		fmt.Fprint(out, "> ")
 	}
-	scanner := bufio.NewScanner(p.In)
+	scanner := bufio.NewScanner(in)
 	if !scanner.Scan() {
-		if p.Fallback != "" {
-			return p.Fallback, nil
+		if fallback != "" {
+			return fallback, nil
 		}
 		return "", ErrUserCancelled
 	}
@@ -64,7 +86,7 @@ func (p InteractivePicker) Pick() (string, error) {
 				return inf.Name, nil
 			}
 		}
-		return p.Fallback, nil
+		return fallback, nil
 	}
 	// Parse number or name
 	n := 0
@@ -73,7 +95,7 @@ func (p InteractivePicker) Pick() (string, error) {
 			return infos[n-1].Name, nil
 		}
 	}
-	// Match by name (case-insensitive prefix)
+	// Match by name (case-insensitive exact)
 	for _, inf := range infos {
 		if strings.EqualFold(inf.Name, line) {
 			return inf.Name, nil

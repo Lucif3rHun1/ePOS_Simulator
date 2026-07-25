@@ -136,7 +136,7 @@ func EnumPrinters() ([]PrinterInfo, error) {
 			IsDefault:  name != "" && name == defaultName,
 		})
 	}
-	return infos, nil
+	return filterEmpty(infos), nil
 }
 
 func getDefaultPrinterName() string {

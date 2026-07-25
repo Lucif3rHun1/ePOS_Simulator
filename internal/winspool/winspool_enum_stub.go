@@ -21,7 +21,7 @@ type PrinterInfo struct {
 
 // EnumPrinters returns a single fake printer on non-Windows for dev/testing.
 func EnumPrinters() ([]PrinterInfo, error) {
-	return []PrinterInfo{
+	return filterEmpty([]PrinterInfo{
 		{
 			Name:      "FakePrinter (non-Windows stub)",
 			PortName:  "FAKE",
@@ -29,7 +29,7 @@ func EnumPrinters() ([]PrinterInfo, error) {
 			IsDefault: true,
 			Comment:   "Emulator is running on non-Windows; this is a stub. Real enumeration requires Windows.",
 		},
-	}, nil
+	}), nil
 }
 
 // FormatList returns a human-readable listing for CLI output.
