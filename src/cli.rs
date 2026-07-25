@@ -154,6 +154,7 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
         verbose: args.verbose,
         allow_drawer: args.drawer,
         strict_xml: args.strict_xml,
+        ..Default::default()
     };
 
     print_banner(args, printer_name);
