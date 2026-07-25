@@ -169,9 +169,43 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
     if args.tls {
         anyhow::bail!("--tls is not yet wired in the Rust port (rustls/aws-lc cross-build issue). v2.0.0 dev binary is HTTP-only.");
     }
-    axum::serve(listener, app.into_make_service()).await?;
+
+    tracing::info!(target: "startup", "ready | ctrl_c to stop");
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!(target: "startup", "shutdown complete");
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Resolve on SIGINT (Ctrl-C) on every platform, plus SIGTERM on Unix.
+/// In-flight requests are allowed to finish before axum returns; spooler
+/// jobs already submitted via `spawn_blocking` will complete on their
+/// own blocking threads.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(target: "shutdown", "ctrl_c handler failed | err={}", e);
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => { let _ = s.recv().await; }
+            Err(e) => {
+                tracing::error!(target: "shutdown", "SIGTERM handler failed | err={}", e);
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!(target: "shutdown", "received SIGINT"),
+        _ = terminate => tracing::info!(target: "shutdown", "received SIGTERM"),
+    }
 }
 
 fn print_banner(args: &Args, printer_name: &str) {

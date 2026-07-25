@@ -464,4 +464,34 @@ mod tests {
         assert!(c.lookup(&2).is_some());
         assert!(c.lookup(&3).is_some());
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn many_concurrent_requests_do_not_panic() {
+        // Fire 50 simultaneous requests through the router. On non-Windows
+        // the spooler returns Unsupported and we get a SOAP error body,
+        // but the router itself must not panic, deadlock, or drop requests.
+        let app = router(cfg());
+        let mut handles = Vec::with_capacity(50);
+        for _ in 0..50 {
+            let app = app.clone();
+            handles.push(tokio::spawn(async move {
+                let req = HttpRequest::builder()
+                    .method(Method::POST)
+                    .uri("/cgi-bin/epos/service.cgi")
+                    .body(Body::from(b"<<<garbage>>>".to_vec()))
+                    .unwrap();
+                app.oneshot(req).await
+            }));
+        }
+        let mut ok = 0;
+        for h in handles {
+            if let Ok(Ok(resp)) = h.await {
+                if resp.status().is_success() {
+                    ok += 1;
+                }
+            }
+        }
+        assert_eq!(ok, 50, "all 50 concurrent requests should get a 200");
+    }
+
 }
