@@ -23,6 +23,32 @@ type PrinterInfo struct {
 	IsDefault  bool
 }
 
+// printerInfo2W matches Windows SDK winspool.h PRINTER_INFO_2W on amd64.
+// 13 pointers (8 bytes each) + 6 DWORDs (4 bytes each) = 128 bytes total.
+// Used only as a typed overlay over the raw EnumPrintersW buffer; we never
+// dereference DevMode/SecurityDescriptor (uintptr placeholders).
+type printerInfo2W struct {
+	ServerName         *uint16
+	PrinterName        *uint16
+	ShareName          *uint16
+	PortName           *uint16
+	DriverName         *uint16
+	Comment            *uint16
+	Location           *uint16
+	DevMode            uintptr
+	SepFile            *uint16
+	PrintProcessor     *uint16
+	Datatype           *uint16
+	Parameters         *uint16
+	SecurityDescriptor uintptr
+	Attributes         uint32
+	Priority           uint32
+	DefaultPriority    uint32
+	StartTime          uint32
+	UntilTime          uint32
+	Status             uint32
+}
+
 // EnumPrinters lists all printers visible to the local spooler.
 // Uses EnumPrintersW with PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS.
 func EnumPrinters() ([]PrinterInfo, error) {
@@ -71,39 +97,43 @@ func EnumPrinters() ([]PrinterInfo, error) {
 	defaultName := getDefaultPrinterName()
 	infos := make([]PrinterInfo, 0, returned)
 
-	// PRINTER_INFO_2W on Windows amd64: 12 pointers (96 bytes) + 5 DWORDs (20 bytes) = 116 bytes, padded to 120.
-	// We extract only the first 7 string pointers (Server, Printer, Share, Port, Driver, Comment, Location)
-	// using fixed offsets — these are stable across Windows versions.
-	const (
-		OFF_PPRINTERNAME = 8  // 2nd pointer
-		OFF_PSERVERNAME  = 0  // 1st pointer
-		OFF_PSHARENAME   = 16 // 3rd pointer
-		OFF_PPORTNAME    = 24 // 4th pointer
-		OFF_PDRIVERNAME  = 32 // 5th pointer
-		OFF_PCOMMENT     = 40 // 6th pointer
-		OFF_PLOCATION    = 48 // 7th pointer
-		RECORD_SIZE      = 120
-	)
+	// Capture buffer bounds so we can validate the pointers EnumPrintersW
+	// hands us. If a printer driver returns a pointer that does not point
+	// inside this buffer, the call to UTF16PtrToString will fault. We saw
+	// this on a real Windows machine: pPrinterName was 0x100001a40 (a
+	// non-nil, non-readable address) and crashed the process at startup.
+	bufStart := uintptr(unsafe.Pointer(&buf[0]))
+	bufEnd := bufStart + uintptr(len(buf))
 
-	for i := uint32(0); i < returned; i++ {
-		base := uintptr(i) * RECORD_SIZE
-		getStr := func(off uintptr) string {
-			ptr := *(**uint16)(unsafe.Pointer(&buf[base+off]))
-			if ptr == nil {
-				return ""
-			}
-			return windows.UTF16PtrToString(ptr)
+	safeStr := func(p *uint16) string {
+		if p == nil {
+			return ""
 		}
-		name := getStr(OFF_PPRINTERNAME)
+		addr := uintptr(unsafe.Pointer(p))
+		if addr < bufStart || addr >= bufEnd {
+			return ""
+		}
+		return windows.UTF16PtrToString(p)
+	}
+
+	recordSize := unsafe.Sizeof(printerInfo2W{})
+	for i := uint32(0); i < returned; i++ {
+		base := uintptr(i) * recordSize
+		if base+recordSize > uintptr(len(buf)) {
+			break
+		}
+		info := (*printerInfo2W)(unsafe.Pointer(&buf[base]))
+
+		name := safeStr(info.PrinterName)
 		infos = append(infos, PrinterInfo{
 			Name:       name,
-			ServerName: getStr(OFF_PSERVERNAME),
-			ShareName:  getStr(OFF_PSHARENAME),
-			PortName:   getStr(OFF_PPORTNAME),
-			DriverName: getStr(OFF_PDRIVERNAME),
-			Comment:    getStr(OFF_PCOMMENT),
-			Location:   getStr(OFF_PLOCATION),
-			IsDefault:  name == defaultName,
+			ServerName: safeStr(info.ServerName),
+			ShareName:  safeStr(info.ShareName),
+			PortName:   safeStr(info.PortName),
+			DriverName: safeStr(info.DriverName),
+			Comment:    safeStr(info.Comment),
+			Location:   safeStr(info.Location),
+			IsDefault:  name != "" && name == defaultName,
 		})
 	}
 	return infos, nil
@@ -113,7 +143,7 @@ func getDefaultPrinterName() string {
 	mod := windows.NewLazySystemDLL("winspool.drv")
 	proc := mod.NewProc("GetDefaultPrinterW")
 	var needed uint32
-	// First pass: get required buffer size (returns needed size even on success-with-buffer-too-small).
+	// First pass: get required buffer size.
 	proc.Call(0, uintptr(unsafe.Pointer(&needed)))
 	if needed == 0 {
 		return ""
