@@ -47,37 +47,46 @@ pub fn double_height(on: bool) -> Vec<u8> {
     vec![GS, b'!', if on { 0x10 } else { 0x00 }]
 }
 
-/// GS v 0 — raster bitmap, banded. Encodes a 1-bit monochrome image as
-/// a series of single-row GS v 0 commands: `1D 76 30 m xL xH yL yH
-/// d[0]..d[k]` (the `m` mode byte is required and comes before xL/xH —
-/// it is easy to mistake the ASCII '0' of the command name for it).
-/// `img` is row-major; each row is `(width + 7) / 8` bytes with MSB =
-/// leftmost pixel. `paper_width` is the printer's paper width in dots
-/// (576 = 80mm, 384 = 58mm).
+/// GS v 0 — raster bitmap, sent as a single command for the whole image:
+/// `1D 76 30 m xL xH yL yH d[0]..d[k]` (the `m` mode byte is required and
+/// comes before xL/xH — it is easy to mistake the ASCII '0' of the command
+/// name for it). `img` is row-major; each row is `(width + 7) / 8` bytes
+/// with MSB = leftmost pixel. `paper_width` is the printer's paper width
+/// in dots (576 = 80mm, 384 = 58mm).
+///
+/// One command for the entire image, not one per row: GS v 0 triggers a
+/// full print-engine feed/motor cycle per call, so splitting a tall image
+/// into per-row calls (as this used to do) turns one continuous raster
+/// print into hundreds of separate mechanical stop/start cycles — very
+/// slow, and any per-call feed overshoot accumulates into large extra
+/// vertical gaps. yL/yH supports up to 65535 rows, comfortably covering
+/// any receipt-length image in one call.
 pub fn raster_banded(img: &[u8], width: usize, height: usize, paper_width: usize) -> Vec<u8> {
     if img.is_empty() || width == 0 || height == 0 {
         return Vec::new();
     }
     let bytes_per_row = paper_width.div_ceil(8);
-    let mut out = Vec::new();
+    let src_bytes_per_row = width.div_ceil(8);
+    let mut band = vec![0u8; bytes_per_row * height];
     for y in 0..height {
-        let mut band = vec![0u8; bytes_per_row];
-        let src_off = y * width.div_ceil(8);
+        let src_off = y * src_bytes_per_row;
+        let dst_off = y * bytes_per_row;
         for x in 0..width.min(paper_width) {
             let byte_idx = src_off + x / 8;
             let bit_idx = 7 - (x % 8) as u32;
             if byte_idx < img.len() && (img[byte_idx] >> bit_idx) & 1 == 1 {
-                band[x / 8] |= 1 << bit_idx;
+                band[dst_off + x / 8] |= 1 << bit_idx;
             }
         }
-        out.extend_from_slice(&[GS, b'v', b'0']);
-        out.push(0); // m = 0 (normal-size raster); required, comes before xL
-        out.push((bytes_per_row % 256) as u8);
-        out.push((bytes_per_row / 256) as u8);
-        out.push(1); // yL = 1 row per band
-        out.push(0); // yH
-        out.extend_from_slice(&band);
     }
+    let mut out = Vec::with_capacity(8 + band.len());
+    out.extend_from_slice(&[GS, b'v', b'0']);
+    out.push(0); // m = 0 (normal-size raster); required, comes before xL
+    out.push((bytes_per_row % 256) as u8);
+    out.push((bytes_per_row / 256) as u8);
+    out.push((height % 256) as u8);
+    out.push((height / 256) as u8);
+    out.extend_from_slice(&band);
     out
 }
 
@@ -182,17 +191,17 @@ mod tests {
     }
 
     #[test]
-    fn raster_multi_row_banded() {
-        // 2 rows on a 16-dot paper, each row is 2 bytes of 0xFF.
+    fn raster_multi_row_single_command() {
+        // 2 rows on a 16-dot paper, each row is 2 bytes of 0xFF. Must be
+        // ONE GS v 0 command with yL=2 (all rows), not two separate
+        // single-row commands — splitting into per-row commands triggers
+        // a separate print-engine feed cycle per row, which is both very
+        // slow and stacks up extra vertical gaps between rows.
         let img = vec![0xFF, 0xFF, 0xFF, 0xFF];
         let out = raster_banded(&img, 16, 2, 16);
-        // Each band: GS v '0' m xL xH yL yH data
         assert_eq!(
             out,
-            vec![
-                0x1D, b'v', b'0', 0, 2, 0, 1, 0, 0xFF, 0xFF,
-                0x1D, b'v', b'0', 0, 2, 0, 1, 0, 0xFF, 0xFF,
-            ]
+            vec![0x1D, b'v', b'0', 0, 2, 0, 2, 0, 0xFF, 0xFF, 0xFF, 0xFF]
         );
     }
 

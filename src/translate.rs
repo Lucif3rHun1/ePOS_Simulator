@@ -401,11 +401,19 @@ mod tests {
     fn image_element_text_content_is_decoded_as_raster() {
         let body = br#"<epos-print xmlns="x"><image width="8" height="8">//////////8=</image></epos-print>"#;
         let out = translate(body, Options { paper_width: 8, ..Default::default() }).unwrap();
-        // GS v 0, m=0, xL=1, xH=0, yL=1, yH=0, then one data byte 0xFF,
-        // repeated for 8 rows (height=8).
-        let band = [escpos::GS, b'v', b'0', 0, 1, 0, 1, 0, 0xFF];
-        let count = out.windows(band.len()).filter(|w| *w == band).count();
-        assert_eq!(count, 8, "expected 8 raster row bands in out: {:02x?}", out);
+        // One GS v 0 command for the whole image: m=0, xL=1, xH=0, yL=8,
+        // yH=0, then 8 data bytes of 0xFF (one per row) — NOT split into
+        // 8 separate single-row commands (that used to be slow and added
+        // extra vertical gaps between rows).
+        let expected: Vec<u8> = {
+            let mut v = vec![escpos::GS, b'v', b'0', 0, 1, 0, 8, 0];
+            v.extend_from_slice(&[0xFF; 8]);
+            v
+        };
+        assert!(
+            out.windows(expected.len()).any(|w| w == expected.as_slice()),
+            "expected single raster command for all 8 rows in out: {:02x?}", out
+        );
     }
 
     #[test]
