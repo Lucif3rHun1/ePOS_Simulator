@@ -1,17 +1,63 @@
 //! Windows print spooler (winspool.drv) wrapper for RAW printing.
+//!
+//! FFI bindings are written directly here rather than going through windows-sys
+//! because windows-sys 0.59's transitive `windows-targets` 0.52 doesn't include
+//! the winspool link directive, which would force an extra crate dep just to
+//! emit `rustc-link-lib=winspool`. Direct FFI is simpler and version-stable.
 
 #[cfg(windows)]
 mod imp {
-    use std::ffi::c_void;
     use std::ptr;
 
     use thiserror::Error;
-    use windows_sys::core::PCWSTR;
-    use windows_sys::Win32::Foundation::GetLastError;
-    use windows_sys::Win32::Graphics::Printing::{
-        ClosePrinter, EndDocPrinter, OpenPrinterW, StartDocPrinterW, WritePrinter,
-        DOC_INFO_1W, PRINTER_ACCESS_USE, PRINTER_DEFAULTSW,
-    };
+
+    // ---- types ------------------------------------------------------------
+
+    #[repr(C)]
+    pub struct PRINTER_DEFAULTSW {
+        pub pDatatype: *mut u16,
+        pub pDevMode: *mut core::ffi::c_void,
+        pub DesiredAccess: u32,
+    }
+
+    #[repr(C)]
+    pub struct DOC_INFO_1W {
+        pub pDocName: *mut u16,
+        pub pOutputFile: *mut u16,
+        pub pDatatype: *mut u16,
+    }
+
+    /// `PRINTER_ACCESS_USE` (0x00000008) — opens the printer for raw writes.
+    pub const PRINTER_ACCESS_USE: u32 = 0x00000008;
+
+    pub type Handle = *mut core::ffi::c_void;
+
+    // ---- raw FFI ----------------------------------------------------------
+
+    #[link(name = "winspool", kind = "raw-dylib")]
+    extern "system" {
+        fn OpenPrinterW(
+            pPrinterName: *const u16,
+            phPrinter: *mut Handle,
+            pDefault: *const PRINTER_DEFAULTSW,
+        ) -> i32;
+        fn ClosePrinter(hPrinter: Handle) -> i32;
+        fn StartDocPrinterW(hPrinter: Handle, level: u32, pDocInfo: *const DOC_INFO_1W) -> u32;
+        fn EndDocPrinter(hPrinter: Handle) -> i32;
+        fn WritePrinter(
+            hPrinter: Handle,
+            pBuf: *const u8,
+            cbBuf: u32,
+            pcWritten: *mut u32,
+        ) -> i32;
+    }
+
+    #[link(name = "kernel32", kind = "raw-dylib")]
+    extern "system" {
+        fn GetLastError() -> u32;
+    }
+
+    // ---- error type -------------------------------------------------------
 
     #[derive(Debug, Error)]
     pub enum Error {
@@ -22,12 +68,10 @@ mod imp {
         #[error("winspool: WritePrinter failed: wrote {written} of {total} bytes")]
         WriteShort { written: usize, total: usize },
         #[error("winspool: EndDocPrinter failed")]
-        EndDoc,
+        End,
         #[error("winspool: ClosePrinter failed")]
         Close,
     }
-
-    pub type Handle = *mut c_void;
 
     fn to_utf16(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -36,14 +80,14 @@ mod imp {
     pub fn open_printer(name: &str) -> Result<Handle, Error> {
         let name_w = if name.is_empty() { Vec::new() } else { to_utf16(name) };
         let datatype_w = to_utf16("RAW");
-        let mut defaults = PRINTER_DEFAULTSW {
+        let defaults = PRINTER_DEFAULTSW {
             pDatatype: datatype_w.as_ptr() as *mut u16,
             pDevMode: ptr::null_mut(),
             DesiredAccess: PRINTER_ACCESS_USE,
         };
         let name_ptr = if name_w.is_empty() { ptr::null() } else { name_w.as_ptr() };
         let mut handle: Handle = ptr::null_mut();
-        let ok = unsafe { OpenPrinterW(name_ptr as *const u16, &mut handle, &mut defaults) };
+        let ok = unsafe { OpenPrinterW(name_ptr, &mut handle, &defaults) };
         if ok == 0 {
             let _ = unsafe { GetLastError() };
             return Err(Error::Open);
@@ -68,7 +112,7 @@ mod imp {
         let started = unsafe { StartDocPrinterW(handle, 1, &di) };
         if started == 0 { return Err(Error::StartDoc); }
         let mut written: u32 = 0;
-        let ok = unsafe { WritePrinter(handle, data.as_ptr() as *const _, data.len() as u32, &mut written) };
+        let ok = unsafe { WritePrinter(handle, data.as_ptr(), data.len() as u32, &mut written) };
         if ok == 0 {
             unsafe { EndDocPrinter(handle) };
             return Err(Error::WriteShort { written: written as usize, total: data.len() });
@@ -78,7 +122,7 @@ mod imp {
             return Err(Error::WriteShort { written: written as usize, total: data.len() });
         }
         let ok = unsafe { EndDocPrinter(handle) };
-        if ok == 0 { return Err(Error::EndDoc); }
+        if ok == 0 { return Err(Error::End); }
         Ok(())
     }
 

@@ -19,6 +19,7 @@ pub mod cli;
 pub mod eposhttp;
 pub mod escpos;
 pub mod logging;
+pub mod mdns;
 pub mod netinfo;
 pub mod picker;
 pub mod soap;

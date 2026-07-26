@@ -8,6 +8,7 @@ use clap::Parser;
 
 use crate::eposhttp::{self, AppConfig};
 use crate::logging::{self, Config as LogConfig};
+use crate::mdns;
 use crate::netinfo;
 use crate::picker::{self, Picker};
 use crate::winspool;
@@ -79,6 +80,11 @@ pub struct Args {
     /// When --printer is empty, prompt user to select from enumerated printers.
     #[arg(long, default_value_t = true)]
     pub interactive: bool,
+
+    /// Advertise this printer via mDNS/Bonjour (_epos._tcp.local.) so apps
+    /// on the same WiFi network can discover it without a manual IP.
+    #[arg(long, default_value_t = true)]
+    pub mdns: bool,
 }
 
 pub async fn run(args: Args) -> anyhow::Result<ExitCode> {
@@ -170,10 +176,20 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
         anyhow::bail!("--tls is not yet wired in the Rust port (rustls/aws-lc cross-build issue). v2.0.0 dev binary is HTTP-only.");
     }
 
+    let mdns_handle = if args.mdns {
+        mdns::advertise(args.port, printer_name)
+    } else {
+        None
+    };
+
     tracing::info!(target: "startup", "ready | ctrl_c to stop");
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    if let Some(handle) = mdns_handle {
+        handle.stop();
+    }
     tracing::info!(target: "startup", "shutdown complete");
 
     Ok(ExitCode::SUCCESS)
@@ -241,6 +257,8 @@ fn print_banner(args: &Args, printer_name: &str) {
 ", args.verbose));
     out.push_str(&format!("  Strict   : {}
 ", args.strict_xml));
+    out.push_str(&format!("  mDNS     : {}
+", args.mdns));
     out.push_str(&format!("  Log file : {log_label}
 "));
     out.push_str("

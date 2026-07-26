@@ -51,19 +51,13 @@ anyhow = "1"
 # Atomic ops / concurrent state
 parking_lot = "0.12"
 
-# Windows-only FFI for winspool.
-# build.rs emits `cargo:rustc-link-lib=winspool` directly — that handles
-# the import-library link directive without needing windows-targets.
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",     # gates PRINTER_DEFAULTSW + OpenPrinterW
-    "Win32_Graphics_Printing", # winspool: Close/End/Start/WritePrinter, DOC_INFO_1W
-    "Win32_Storage_Xps",
-    "Win32_Security",
-    "Win32_System_Com",
-    "Win32_System_Com_StructuredStorage",
-] }
+# LAN service discovery (mDNS/Bonjour/DNS-SD) so phones/apps on the same
+# WiFi network can find this printer without knowing its IP.
+mdns-sd = "0.20"
+
+# Windows FFI for winspool is written directly in src/winspool.rs using
+# #[link(name = "winspool", kind = "raw-dylib")] so we don't need windows-sys
+# or windows-targets at all.
 
 # Reduce binary size for release builds
 [profile.release]
