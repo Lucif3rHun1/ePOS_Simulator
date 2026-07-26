@@ -36,33 +36,40 @@ jobs:
         with:
           cache-on-failure: true
 
+      # IMPORTANT: these cargo steps must NOT run under `shell: bash`.
+      # Git Bash (the only bash on windows-latest) prepends its own
+      # usr/bin to PATH ahead of the MSVC toolchain, so rustc's call to
+      # `link.exe` resolves to Git's coreutils `link.exe` (a symlink
+      # tool) instead of MSVC's linker, and every link step fails with
+      # "/usr/bin/link: extra operand". pwsh (the Windows-runner default
+      # shell) respects the PATH ordering ilammy/msvc-dev-cmd set up.
       - name: Show toolchain + linker
-        shell: bash
+        shell: pwsh
         run: |
-          echo "rustc: $(rustc --version)"
-          echo "cargo: $(cargo --version)"
-          command -v link.exe >/dev/null && echo "link.exe: OK ($(command -v link.exe))" || echo "link.exe: MISSING"
-          command -v cl.exe >/dev/null && echo "cl.exe:  OK ($(command -v cl.exe))" || echo "cl.exe:  MISSING"
+          Write-Host "rustc: $(rustc --version)"
+          Write-Host "cargo: $(cargo --version)"
+          $link = Get-Command link.exe -ErrorAction SilentlyContinue
+          if ($link) { Write-Host "link.exe: OK ($($link.Source))" } else { Write-Host "link.exe: MISSING" }
+          $cl = Get-Command cl.exe -ErrorAction SilentlyContinue
+          if ($cl) { Write-Host "cl.exe:  OK ($($cl.Source))" } else { Write-Host "cl.exe:  MISSING" }
 
       - name: cargo check (fast dep-resolution gate)
-        shell: bash
+        shell: pwsh
         run: |
-          set -e
-          cargo check --release --target x86_64-pc-windows-msvc 2>&1 | tee build-check.log
-          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-            echo "::error::cargo check failed"
+          cargo check --release --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath build-check.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::cargo check failed"
             exit 1
-          fi
+          }
 
       - name: Build release binary (with log capture)
-        shell: bash
+        shell: pwsh
         run: |
-          set -e
-          cargo build --release --target x86_64-pc-windows-msvc 2>&1 | tee build.log
-          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-            echo "::error::cargo build failed — see build-log artifact"
+          cargo build --release --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::cargo build failed — see build-log artifact"
             exit 1
-          fi
+          }
 
       - name: Always-upload build logs (success or fail)
         if: always()
@@ -76,8 +83,8 @@ jobs:
           retention-days: 7
 
       - name: Copy artifact to repo root
-        shell: bash
-        run: cp target/x86_64-pc-windows-msvc/release/epos-emulator.exe epos-emulator.exe
+        shell: pwsh
+        run: Copy-Item target/x86_64-pc-windows-msvc/release/epos-emulator.exe epos-emulator.exe
 
       - name: Run tests (host arch)
         run: cargo test --lib --release --no-fail-fast
