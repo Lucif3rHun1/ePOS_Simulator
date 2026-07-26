@@ -89,6 +89,20 @@ jobs:
       - name: Run tests (host arch)
         run: cargo test --lib --release --no-fail-fast
 
+      - name: Verify --list-printers enumerates real Windows printers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $out = .\epos-emulator.exe --list-printers | Out-String
+          Write-Host $out
+          if ($out -match "FakePrinter") {
+            throw "enum_printers() returned the non-Windows stub on a Windows runner"
+          }
+          if ($out -notmatch "Microsoft Print to PDF") {
+            throw "expected the standard 'Microsoft Print to PDF' printer (ships on every windows-latest runner) in the list"
+          }
+          Write-Host "OK: real printer enumeration works"
+
       - name: Upload .exe as workflow artifact
         uses: actions/upload-artifact@v4
         with:
