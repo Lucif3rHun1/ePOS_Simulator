@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Load MSVC + Windows SDK env (link.exe, cl.exe, INCLUDE, LIB, PATH).
+      # Without this, cargo can't find link.exe on a fresh windows-latest.
+      - name: Setup MSVC dev environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -29,34 +36,42 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Show toolchain + MSVC env
+      - name: Show toolchain + linker
         shell: bash
         run: |
-          echo "=== rustc ===" && rustc --version
-          echo "=== cargo ===" && cargo --version
-          echo "=== rustup ===" && rustup show
-          echo "=== link.exe ===" && (command -v link.exe || which link.exe || echo "link.exe NOT FOUND")
-          echo "=== cl.exe ===" && (command -v cl.exe || which cl.exe || echo "cl.exe NOT FOUND")
-          echo "=== MSVC env ===" && (cmd //c "call \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1 && set" 2>/dev/null | grep -E "^(VCINSTALLDIR|VCToolsInstallDir|WindowsSdkDir|UCRTVersion)=" | head -10) || echo "vcvars64.bat not callable from this path"
+          echo "rustc: $(rustc --version)"
+          echo "cargo: $(cargo --version)"
+          command -v link.exe >/dev/null && echo "link.exe: OK ($(command -v link.exe))" || echo "link.exe: MISSING"
+          command -v cl.exe >/dev/null && echo "cl.exe:  OK ($(command -v cl.exe))" || echo "cl.exe:  MISSING"
+
+      - name: cargo check (fast dep-resolution gate)
+        shell: bash
+        run: |
+          set -e
+          cargo check --release --target x86_64-pc-windows-msvc 2>&1 | tee build-check.log
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "::error::cargo check failed"
+            exit 1
+          fi
 
       - name: Build release binary (with log capture)
         shell: bash
         run: |
-          set -o pipefail
-          cargo build --release --target x86_64-pc-windows-msvc -v 2>&1 | tee build.log
-          status=${PIPESTATUS[0]}
-          echo "cargo exit status: $status"
-          if [ "$status" -ne 0 ]; then
-            echo "::error::cargo build failed (status=$status) — see build.log artifact"
-            exit "$status"
+          set -e
+          cargo build --release --target x86_64-pc-windows-msvc 2>&1 | tee build.log
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "::error::cargo build failed — see build-log artifact"
+            exit 1
           fi
 
-      - name: Always-upload build log (success or fail)
+      - name: Always-upload build logs (success or fail)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
+          name: build-logs
+          path: |
+            build.log
+            build-check.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -67,7 +82,7 @@ jobs:
       - name: Run tests (host arch)
         run: cargo test --lib --release --no-fail-fast
 
-      - name: Upload .exe as workflow artifact (every run)
+      - name: Upload .exe as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: epos-emulator-windows-x64
