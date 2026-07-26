@@ -2,11 +2,18 @@ name: build-windows
 
 on:
   push:
-    tags: [ "v*" ]
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
   workflow_dispatch:
+
+permissions:
+  contents: write   # required for softprops/action-gh-release on tag push
 
 jobs:
   build:
+    name: Build + Test (Windows MSVC)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,23 +21,55 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: stable
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo
+      - name: Cache cargo registry + build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
-      - name: Build release binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Build release binary (Windows)
+        run: cargo build --release --target x86_64-pc-windows-msvc --locked
 
-      - name: Rename artifact
+      - name: Copy artifact to repo root
         run: cp target/x86_64-pc-windows-msvc/release/epos-emulator.exe epos-emulator.exe
 
-      - name: Run tests
-        run: cargo test --lib --no-fail-fast
+      - name: Run tests (host arch)
+        run: cargo test --lib --release --no-fail-fast
 
-      - name: Upload release asset
+      - name: Upload .exe as workflow artifact (every run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: epos-emulator-windows-x64
+          path: epos-emulator.exe
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify SOAP round-trip against the built binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./epos-emulator.exe --port 18080 &
+          SERVER_PID=$!
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            sleep 0.5
+            if curl -fsS http://127.0.0.1:18080/ >/dev/null; then break; fi
+          done
+          HTTP_CODE=$(curl -sS -o /tmp/r.xml -w "%{http_code}" \
+            -X POST "http://127.0.0.1:18080/cgi-bin/epos/service.cgi?devid=ci" \
+            -H 'Content-Type: text/xml; charset=utf-8' \
+            --data-binary @testdata/odoo-pos-test-print.xml)
+          echo "POST status: $HTTP_CODE"
+          cat /tmp/r.xml
+          test "$HTTP_CODE" = "200"
+          grep -q "success" /tmp/r.xml
+          kill $SERVER_PID 2>/dev/null || true
+
+      - name: Attach .exe to GitHub release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: epos-emulator.exe
           generate_release_notes: true
+          fail_on_unmatched_files: true
