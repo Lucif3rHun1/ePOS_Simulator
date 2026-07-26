@@ -538,19 +538,20 @@ mod tests {
     fn image_element_text_content_is_decoded_as_raster() {
         let body = br#"<epos-print xmlns="x"><image width="8" height="8">//////////8=</image></epos-print>"#;
         let out = translate(body, Options { paper_width: 8, ..Default::default() }).unwrap();
-        // One GS ( L fn112 (store) command for the whole image — width=8,
-        // height=8, then 8 data bytes of 0xFF (one per row) — NOT split
-        // into 8 separate single-row commands (that used to be slow and
-        // added extra vertical gaps between rows), followed by fn50 (print).
+        // One GS v 0 command for the whole image — width=8, height=8,
+        // then 8 data bytes of 0xFF (one per row) — NOT split into 8
+        // separate single-row commands (that used to be slow and added
+        // extra vertical gaps between rows). GS v 0, not GS ( L: the
+        // latter corrupted large real-world images on actual hardware
+        // (see escpos::raster_print's doc comment).
         let expected: Vec<u8> = {
-            let mut v = vec![escpos::GS, b'(', b'L', 18, 0, b'0', 112, b'0', 1, 1, b'1', 8, 0, 8, 0];
+            let mut v = vec![escpos::GS, b'v', b'0', 0, 1, 0, 8, 0];
             v.extend_from_slice(&[0xFF; 8]);
-            v.extend_from_slice(&[escpos::GS, b'(', b'L', 2, 0, b'0', 50]);
             v
         };
         assert!(
             out.windows(expected.len()).any(|w| w == expected.as_slice()),
-            "expected single GS ( L raster command for all 8 rows in out: {:02x?}", out
+            "expected single GS v 0 raster command for all 8 rows in out: {:02x?}", out
         );
     }
 
@@ -559,7 +560,7 @@ mod tests {
         // Fallback path: some emitters may self-close with a `data` attribute.
         let body = br#"<epos-print xmlns="x"><image width="8" height="8" data="//////////8="/></epos-print>"#;
         let out = translate(body, Options { paper_width: 8, ..Default::default() }).unwrap();
-        assert!(out.windows(3).any(|w| w == &[escpos::GS, b'(', b'L']), "expected raster command in out: {:02x?}", out);
+        assert!(out.windows(3).any(|w| w == &[escpos::GS, b'v', b'0']), "expected raster command in out: {:02x?}", out);
     }
 
     #[test]
