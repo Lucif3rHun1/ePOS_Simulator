@@ -84,7 +84,11 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
     let mut buf = Vec::new();
     let mut out = Vec::new();
     out.extend_from_slice(&escpos::init());
-    out.extend_from_slice(&escpos::select_codepage(crate::codepage::esc_t_table_number(&opts.codepage)));
+    // PC437 is the printer's power-on default; we don't send ESC t n because
+    // (a) it's redundant on standard Epson models, (b) some firmwares render
+    // unknown ESC commands as dots/dashes (looks like "gibberish"). If a
+    // user needs a different codepage, the printer's own config or a
+    // reverse-proxied setup is the right place to set it.
 
     // State: which element context we are in. None means "at top level".
     #[derive(Debug, Clone, PartialEq, Eq)]
