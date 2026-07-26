@@ -91,7 +91,8 @@ pub fn default_with_fallback(name: &str, fallback: &str) -> String {
 }
 
 pub fn is_interactive() -> bool {
-    std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty").is_ok()
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 #[cfg(test)]
