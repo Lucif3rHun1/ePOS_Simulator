@@ -37,14 +37,30 @@ pub fn emphasis(on: bool) -> Vec<u8> {
     vec![ESC, b'E', u8::from(on)]
 }
 
+/// ESC t n — select character code table. `n` must match the table
+/// [`crate::codepage::encode`] transcoded the text with (see
+/// [`crate::codepage::esc_t_table_number`]) — a mismatch here silently
+/// reintroduces the "garbled text" bug this pairing fixes. Persists until
+/// `ESC @`, so callers should emit it once, right after [`init`].
+pub fn select_codepage(n: u8) -> Vec<u8> {
+    vec![ESC, b't', n]
+}
+
 /// ESC - n — underline.
 pub fn underline(n: u8) -> Vec<u8> {
     vec![ESC, b'-', n]
 }
 
-/// GS ! n — character size. Bit 4 (0x10) = double height, bit 5 (0x20) = double width.
-pub fn double_height(on: bool) -> Vec<u8> {
-    vec![GS, b'!', if on { 0x10 } else { 0x00 }]
+/// GS ! n — character size (width/height magnification, 1x-8x each).
+/// Per Epson spec the **low** nibble is the height level and the
+/// **high** nibble is the width level (0 = x1 .. 7 = x8) — e.g.
+/// double-height-only is byte `0x01`, NOT `0x10` (`0x10` is actually
+/// double-*width*; easy to get backwards, verified against
+/// python-escpos's `TXT_STYLE` width/height tables).
+pub fn char_size(width: u8, height: u8) -> Vec<u8> {
+    let w = width.clamp(1, 8) - 1;
+    let h = height.clamp(1, 8) - 1;
+    vec![GS, b'!', (w << 4) | h]
 }
 
 /// GS ( L — print a raster image via Function 112 (store graphics data)
@@ -142,11 +158,13 @@ pub fn pulse() -> Vec<u8> {
 /// GS k m d1..dk NUL — print barcode.
 /// `barcode_type` is the function code (65-86 per ESC/POS spec).
 /// `width` = module width (2-6), `height` = bar height in dots (0-255).
-pub fn barcode(data: &[u8], barcode_type: u8, width: u8, height: u8) -> Vec<u8> {
+/// `hri` = human-readable interpretation position: 0=none, 1=above,
+/// 2=below, 3=both (`GS H n`).
+pub fn barcode(data: &[u8], barcode_type: u8, width: u8, height: u8, hri: u8) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&[GS, b'h', height]); // height
     out.extend_from_slice(&[GS, b'w', width]); // module width
-    out.extend_from_slice(&[GS, b'H', 1]); // HRI above
+    out.extend_from_slice(&[GS, b'H', hri]); // HRI position
     out.extend_from_slice(&[GS, b'k', barcode_type]);
     out.extend_from_slice(data);
     out.push(0); // NUL terminator
@@ -191,6 +209,12 @@ mod tests {
     }
 
     #[test]
+    fn select_codepage_emits_esc_t_n() {
+        assert_eq!(select_codepage(0), vec![0x1B, b't', 0]);
+        assert_eq!(select_codepage(16), vec![0x1B, b't', 16]);
+    }
+
+    #[test]
     fn cut_full_vs_partial() {
         assert_eq!(cut(0), vec![0x1D, b'V', 0]);
         assert_eq!(cut(1), vec![0x1D, b'V', 1]);
@@ -208,8 +232,37 @@ mod tests {
     }
 
     #[test]
+    fn char_size_normal_is_zero() {
+        assert_eq!(char_size(1, 1), vec![0x1D, b'!', 0x00]);
+    }
+
+    #[test]
+    fn char_size_double_height_only_is_low_nibble() {
+        // Double height, normal width: low nibble = 1, high nibble = 0.
+        // NOT 0x10 (that's double WIDTH, not height).
+        assert_eq!(char_size(1, 2), vec![0x1D, b'!', 0x01]);
+    }
+
+    #[test]
+    fn char_size_double_width_only_is_high_nibble() {
+        assert_eq!(char_size(2, 1), vec![0x1D, b'!', 0x10]);
+    }
+
+    #[test]
+    fn char_size_quadruple_combines_both_nibbles() {
+        assert_eq!(char_size(2, 2), vec![0x1D, b'!', 0x11]);
+        assert_eq!(char_size(8, 8), vec![0x1D, b'!', 0x77]);
+    }
+
+    #[test]
     fn drawer_emits_5_bytes() {
         assert_eq!(drawer(100, 250), vec![0x1B, b'p', 0, 100, 250]);
+    }
+
+    #[test]
+    fn barcode_hri_position_is_configurable() {
+        let out = barcode(b"123", 8, 3, 100, 0);
+        assert!(out.windows(3).any(|w| w == &[GS, b'H', 0]), "expected GS H 0: {:02x?}", out);
     }
 
     #[test]

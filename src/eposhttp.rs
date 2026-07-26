@@ -40,6 +40,7 @@ pub struct AppConfig {
     pub max_inflight_prints: usize,
     pub idempotency_window: usize,
     pub paper_width: usize,
+    pub codepage: String,
 }
 
 impl Default for AppConfig {
@@ -54,6 +55,7 @@ impl Default for AppConfig {
             max_inflight_prints: DEFAULT_MAX_INFLIGHT_PRINTS,
             idempotency_window: DEFAULT_IDEMPOTENCY_WINDOW,
             paper_width: translate::DEFAULT_PAPER_WIDTH,
+            codepage: translate::DEFAULT_CODEPAGE.to_string(),
         }
     }
 }
@@ -187,6 +189,7 @@ async fn do_print(shared: Arc<SharedState>, body: Bytes, fp: u64) -> anyhow::Res
         allow_drawer: cfg.allow_drawer,
         strict_xml: cfg.strict_xml,
         paper_width: cfg.paper_width,
+        codepage: cfg.codepage.clone(),
     };
     if cfg.verbose {
         debug!(target: "epos", "xml rx | size={}", body.len());

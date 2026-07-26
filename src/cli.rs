@@ -10,7 +10,7 @@ use crate::eposhttp::{self, AppConfig};
 use crate::logging::{self, Config as LogConfig};
 use crate::mdns;
 use crate::netinfo;
-use crate::picker::{self, Picker};
+use crate::picker;
 use crate::winspool;
 
 /// ePOS Printer Emulator for Odoo Online POS.
@@ -53,7 +53,10 @@ pub struct Args {
     #[arg(long, default_value_t = 576)]
     pub paper_width: u32,
 
-    /// Barcode/QR codepage.
+    /// Character codepage <text> content is transcoded to before being
+    /// sent to the printer (e.g. CP437, CP850, CP1252). Must match the
+    /// printer's actual configured table, or accented/special characters
+    /// will print as the wrong glyphs.
     #[arg(long, default_value = "CP437")]
     pub codepage: String,
 
@@ -161,6 +164,7 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
         allow_drawer: args.drawer,
         strict_xml: args.strict_xml,
         paper_width: args.paper_width as usize,
+        codepage: args.codepage.clone(),
         ..Default::default()
     };
 

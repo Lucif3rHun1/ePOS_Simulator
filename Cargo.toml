@@ -1,6 +1,6 @@
 [package]
 name = "epos-emulator"
-version = "2.0.8"
+version = "2.0.9"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Lucif3rHun1"]
@@ -32,7 +32,6 @@ quick-xml = { version = "0.36", features = ["serialize"] }
 
 # Encoding
 base64 = "0.22"
-encoding_rs = "0.8"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
@@ -54,6 +53,11 @@ parking_lot = "0.12"
 # LAN service discovery (mDNS/Bonjour/DNS-SD) so phones/apps on the same
 # WiFi network can find this printer without knowing its IP.
 mdns-sd = "0.20"
+
+# Single-byte OEM/DOS codepage transcoding (CP437, CP850, etc) for <text>
+# content — ESC/POS printers read bytes >= 0x80 per their active
+# character table, not UTF-8.
+oem_cp = "2.1.2"
 
 # Windows FFI for winspool is written directly in src/winspool.rs using
 # #[link(name = "winspool", kind = "raw-dylib")] so we don't need windows-sys

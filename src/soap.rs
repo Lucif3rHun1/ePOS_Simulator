@@ -85,10 +85,6 @@ pub enum ParseError {
     NotFound,
 }
 
-fn strip_self_close(s: &str) -> String {
-    s.trim_end_matches("/>").to_string()
-}
-
 fn extract(data: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(data).ok()?;
     let start = s.find("<epos-print")?;
