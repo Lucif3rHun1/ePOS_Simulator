@@ -37,13 +37,13 @@ mod imp {
         let name_w = if name.is_empty() { Vec::new() } else { to_utf16(name) };
         let datatype_w = to_utf16("RAW");
         let mut defaults = PRINTER_DEFAULTSW {
-            pDatatype: datatype_w.as_ptr(),
+            pDatatype: datatype_w.as_ptr() as *mut u16,
             pDevMode: ptr::null_mut(),
             DesiredAccess: PRINTER_ACCESS_USE,
         };
         let name_ptr = if name_w.is_empty() { ptr::null() } else { name_w.as_ptr() };
         let mut handle: Handle = ptr::null_mut();
-        let ok = unsafe { OpenPrinterW(PCWSTR(name_ptr as *const u16), &mut handle, &mut defaults) };
+        let ok = unsafe { OpenPrinterW(name_ptr as *const u16, &mut handle, &mut defaults) };
         if ok == 0 {
             let _ = unsafe { GetLastError() };
             return Err(Error::Open);

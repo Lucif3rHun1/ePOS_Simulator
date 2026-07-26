@@ -55,7 +55,8 @@ parking_lot = "0.12"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Printing",
+    "Win32_Graphics_Gdi",     # gates PRINTER_DEFAULTSW + OpenPrinterW
+    "Win32_Graphics_Printing", # winspool: Close/End/Start/WritePrinter, DOC_INFO_1W
     "Win32_Storage_Xps",
     "Win32_Security",
     "Win32_System_Com",
