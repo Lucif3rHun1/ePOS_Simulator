@@ -34,7 +34,7 @@ mod imp {
 
     // ---- raw FFI ----------------------------------------------------------
 
-    #[link(name = "winspool")]
+    #[link(name = "winspool", kind = "raw-dylib")]
     extern "system" {
         fn OpenPrinterW(
             pPrinterName: *const u16,
@@ -52,7 +52,7 @@ mod imp {
         ) -> i32;
     }
 
-    #[link(name = "kernel32")]
+    #[link(name = "kernel32", kind = "raw-dylib")]
     extern "system" {
         fn GetLastError() -> u32;
     }
