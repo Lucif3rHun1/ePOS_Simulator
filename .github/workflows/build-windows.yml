@@ -102,7 +102,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $exe = "epos-emulator.exe"
-          $proc = Start-Process -FilePath ".$exe" -ArgumentList "--port","18080" -PassThru -NoNewWindow
+          $proc = Start-Process -FilePath ".\$exe" -ArgumentList "--port","18080" -PassThru -NoNewWindow
           Start-Sleep -Seconds 2
           try {
             for ($i = 0; $i -lt 20; $i++) {
