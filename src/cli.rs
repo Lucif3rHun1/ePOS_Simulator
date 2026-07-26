@@ -160,6 +160,7 @@ async fn run_server(args: &Args, printer_name: &str) -> anyhow::Result<ExitCode>
         verbose: args.verbose,
         allow_drawer: args.drawer,
         strict_xml: args.strict_xml,
+        paper_width: args.paper_width as usize,
         ..Default::default()
     };
 

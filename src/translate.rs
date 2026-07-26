@@ -13,11 +13,30 @@ use quick_xml::reader::Reader;
 use crate::escpos;
 use crate::soap;
 
-#[derive(Debug, Clone, Copy, Default)]
+/// Default printer paper width in dots (576 = 80mm at 203dpi).
+pub const DEFAULT_PAPER_WIDTH: usize = 576;
+
+#[derive(Debug, Clone, Copy)]
 pub struct Options {
     pub verbose: bool,
     pub allow_drawer: bool,
     pub strict_xml: bool,
+    /// Printer's physical paper width in dots, used to size raster image
+    /// bands (see `<image>` handling). Not related to any XML attribute —
+    /// the ePOS-Print `<image>` element's own `width`/`height` attributes
+    /// describe the image itself, in dots.
+    pub paper_width: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            verbose: false,
+            allow_drawer: false,
+            strict_xml: false,
+            paper_width: DEFAULT_PAPER_WIDTH,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +84,11 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
         Content, // inside <line> -> collecting chardata for the current line
         Barcode { btype: u8, width: u8, height: u8, buf: Vec<u8> },
         Symbol { ecc: u8, buf: Vec<u8> },
+        // <image width=".." height="..">base64-raster-data</image> — the
+        // Epson spec (ePOS-Print XML User's Manual, "<image>") puts the
+        // base64Binary raster data as element text content, not an
+        // attribute. width/height here are the image's own dots.
+        Image { width: usize, height: usize, buf: Vec<u8> },
     }
     let mut ctx = Ctx::None;
     let mut pending_text = String::new();
@@ -106,13 +130,16 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                         out.extend_from_slice(&escpos::pulse());
                     }
                     "image" => {
+                        // Self-closing fallback for a `data` attribute some
+                        // emitters may use; the real per-spec path (base64
+                        // as element text content) goes through Ctx::Image
+                        // in the Start/Text/End handling below.
                         let data = attr_str(&e, "data").unwrap_or_default();
                         if !data.is_empty() {
-                            let paper_width = attr_usize(&e, "width").unwrap_or(576);
+                            let width = attr_usize(&e, "width").unwrap_or(1).max(1);
                             let height = attr_usize(&e, "height").unwrap_or(1).max(1);
-                            let width = attr_usize(&e, "x").unwrap_or(paper_width);
                             if let Ok(img) = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()) {
-                                out.extend_from_slice(&escpos::raster_banded(&img, width, height, paper_width));
+                                out.extend_from_slice(&escpos::raster_banded(&img, width, height, opts.paper_width));
                             }
                         }
                     }
@@ -201,14 +228,11 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                     }
                     (Ctx::None, "cut") => out.extend_from_slice(&escpos::cut(0)),
                     (Ctx::None, "image") => {
-                        let data = attr_str(&e, "data").unwrap_or_default();
-                        if !data.is_empty() {
-                            let paper_width = attr_usize(&e, "width").unwrap_or(576);
-                            let height = attr_usize(&e, "height").unwrap_or(1).max(1);
-                            let width = attr_usize(&e, "x").unwrap_or(paper_width);
-                            let img = base64::engine::general_purpose::STANDARD.decode(data.as_bytes())?;
-                            out.extend_from_slice(&escpos::raster_banded(&img, width, height, paper_width));
-                        }
+                        ctx = Ctx::Image {
+                            width: attr_usize(&e, "width").unwrap_or(1).max(1),
+                            height: attr_usize(&e, "height").unwrap_or(1).max(1),
+                            buf: Vec::new(),
+                        };
                     }
                     (Ctx::None, "drawer") => {
                         if opts.allow_drawer {
@@ -279,6 +303,15 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                             out.extend_from_slice(&escpos::qr_code(data.as_bytes(), ecc, 4));
                         }
                     }
+                } else if name == "image" {
+                    if let Ctx::Image { width, height, buf } = std::mem::replace(&mut ctx, Ctx::None) {
+                        let data = String::from_utf8_lossy(&buf);
+                        let data = data.trim();
+                        if !data.is_empty() {
+                            let img = base64::engine::general_purpose::STANDARD.decode(data.as_bytes())?;
+                            out.extend_from_slice(&escpos::raster_banded(&img, width, height, opts.paper_width));
+                        }
+                    }
                 }
             }
             Ok(Event::Text(t)) => {
@@ -292,6 +325,7 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                     }
                     Ctx::Barcode { ref mut buf, .. } => buf.extend_from_slice(s.as_bytes()),
                     Ctx::Symbol { ref mut buf, .. } => buf.extend_from_slice(s.as_bytes()),
+                    Ctx::Image { ref mut buf, .. } => buf.extend_from_slice(s.as_bytes()),
                     Ctx::None => {
                         // Top-level text outside any element — Odoo POS sometimes
                         // emits whitespace, just ignore.
@@ -356,6 +390,30 @@ mod tests {
         assert!(out.windows(5).any(|w| w == b"Hello"), "expected Hello in out: {:02x?}", out);
         assert!(out.windows(3).any(|w| w == &[0x1B, b'd', 1]), "expected Feed(1) in out: {:02x?}", out);
         assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]), "expected PartialCut GS V 1 in out: {:02x?}", out);
+    }
+
+    /// Regression test for the "image printed nothing" bug: <image> base64
+    /// raster data is element TEXT CONTENT per the Epson ePOS-Print XML
+    /// spec, not a `data` attribute — this example is straight from the
+    /// official manual (ePOS-Print XML User's Manual, "<image>", p.75):
+    /// an 8x8 fully-filled-in raster image.
+    #[test]
+    fn image_element_text_content_is_decoded_as_raster() {
+        let body = br#"<epos-print xmlns="x"><image width="8" height="8">//////////8=</image></epos-print>"#;
+        let out = translate(body, Options { paper_width: 8, ..Default::default() }).unwrap();
+        // GS v 0, xL=1, xH=0, yL=1, yH=0, then one data byte 0xFF, repeated
+        // for 8 rows (height=8).
+        let band = [escpos::GS, b'v', b'0', 1, 0, 1, 0, 0xFF];
+        let count = out.windows(band.len()).filter(|w| *w == band).count();
+        assert_eq!(count, 8, "expected 8 raster row bands in out: {:02x?}", out);
+    }
+
+    #[test]
+    fn image_data_attribute_self_closing_still_works() {
+        // Fallback path: some emitters may self-close with a `data` attribute.
+        let body = br#"<epos-print xmlns="x"><image width="8" height="8" data="//////////8="/></epos-print>"#;
+        let out = translate(body, Options { paper_width: 8, ..Default::default() }).unwrap();
+        assert!(out.windows(3).any(|w| w == &[escpos::GS, b'v', b'0']), "expected raster command in out: {:02x?}", out);
     }
 
     #[test]

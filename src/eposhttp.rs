@@ -39,6 +39,7 @@ pub struct AppConfig {
     pub request_timeout: Duration,
     pub max_inflight_prints: usize,
     pub idempotency_window: usize,
+    pub paper_width: usize,
 }
 
 impl Default for AppConfig {
@@ -52,6 +53,7 @@ impl Default for AppConfig {
             request_timeout: Duration::from_millis(DEFAULT_REQUEST_TIMEOUT_MS),
             max_inflight_prints: DEFAULT_MAX_INFLIGHT_PRINTS,
             idempotency_window: DEFAULT_IDEMPOTENCY_WINDOW,
+            paper_width: translate::DEFAULT_PAPER_WIDTH,
         }
     }
 }
@@ -184,6 +186,7 @@ async fn do_print(shared: Arc<SharedState>, body: Bytes, fp: u64) -> anyhow::Res
         verbose: cfg.verbose,
         allow_drawer: cfg.allow_drawer,
         strict_xml: cfg.strict_xml,
+        paper_width: cfg.paper_width,
     };
     if cfg.verbose {
         debug!(target: "epos", "xml rx | size={}", body.len());
