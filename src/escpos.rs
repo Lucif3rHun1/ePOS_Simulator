@@ -47,47 +47,81 @@ pub fn double_height(on: bool) -> Vec<u8> {
     vec![GS, b'!', if on { 0x10 } else { 0x00 }]
 }
 
-/// GS v 0 — raster bitmap, sent as a single command for the whole image:
-/// `1D 76 30 m xL xH yL yH d[0]..d[k]` (the `m` mode byte is required and
-/// comes before xL/xH — it is easy to mistake the ASCII '0' of the command
-/// name for it). `img` is row-major; each row is `(width + 7) / 8` bytes
-/// with MSB = leftmost pixel. `paper_width` is the printer's paper width
-/// in dots (576 = 80mm, 384 = 58mm).
+/// GS ( L — print a raster image via Function 112 (store graphics data)
+/// followed by Function 50 (print the graphics data in the print buffer).
+/// This is Epson's documented replacement for the obsolete `GS v 0` raster
+/// command; `GS v 0` remaining in single-command form was still slow on
+/// real hardware because raster mode throttles the print engine, and
+/// `GS ( L` is what real Epson network printers and mature ESC/POS
+/// libraries (e.g. python-escpos) use for fast graphics printing.
 ///
-/// One command for the entire image, not one per row: GS v 0 triggers a
-/// full print-engine feed/motor cycle per call, so splitting a tall image
-/// into per-row calls (as this used to do) turns one continuous raster
-/// print into hundreds of separate mechanical stop/start cycles — very
-/// slow, and any per-call feed overshoot accumulates into large extra
-/// vertical gaps. yL/yH supports up to 65535 rows, comfortably covering
-/// any receipt-length image in one call.
-pub fn raster_banded(img: &[u8], width: usize, height: usize, paper_width: usize) -> Vec<u8> {
+/// Byte layout, per Epson ESC/POS "GS ( L <Function 112/50>":
+///   `1D 28 4C pL pH m fn tone xm ym colors xL xH yL yH d[0]..d[k]`
+///   followed by `1D 28 4C 02 00 m fn` (fn=50, no payload) to trigger
+///   the actual print.
+/// - `pL pH`: little-endian byte count of everything from `m` onward.
+/// - `m`: fixed 0x30 for both functions.
+/// - `fn`: 112 (store) then 50 (print).
+/// - `tone`: 0x30 = monochrome. `colors`: 0x31 = single color.
+/// - `xm`/`ym`: dot pitch, 1 = one physical dot per source pixel (the
+///   density that matches our existing 1-pixel-per-dot image data;
+///   2 would double each pixel into a 2x2 dot block).
+/// - `xL xH yL yH`: image width/height in **pixels** (not bytes).
+/// - `d[0]..d[k]`: 1bpp raster, row-major, MSB = leftmost pixel, each row
+///   zero-padded to a byte boundary — same packing as `GS v 0`.
+///
+/// `img` is row-major, `(width + 7) / 8` bytes per row, MSB = leftmost
+/// pixel. `paper_width` is the printer's paper width in dots (576 = 80mm,
+/// 384 = 58mm); output rows are padded/clipped to it.
+pub fn raster_print(img: &[u8], width: usize, height: usize, paper_width: usize) -> Vec<u8> {
     if img.is_empty() || width == 0 || height == 0 {
         return Vec::new();
     }
-    let bytes_per_row = paper_width.div_ceil(8);
+    let dst_bytes_per_row = paper_width.div_ceil(8);
     let src_bytes_per_row = width.div_ceil(8);
-    let mut band = vec![0u8; bytes_per_row * height];
+    let print_width = width.min(paper_width);
+
+    let mut raster = vec![0u8; dst_bytes_per_row * height];
     for y in 0..height {
         let src_off = y * src_bytes_per_row;
-        let dst_off = y * bytes_per_row;
-        for x in 0..width.min(paper_width) {
+        let dst_off = y * dst_bytes_per_row;
+        for x in 0..print_width {
             let byte_idx = src_off + x / 8;
             let bit_idx = 7 - (x % 8) as u32;
             if byte_idx < img.len() && (img[byte_idx] >> bit_idx) & 1 == 1 {
-                band[dst_off + x / 8] |= 1 << bit_idx;
+                raster[dst_off + x / 8] |= 1 << bit_idx;
             }
         }
     }
-    let mut out = Vec::with_capacity(8 + band.len());
-    out.extend_from_slice(&[GS, b'v', b'0']);
-    out.push(0); // m = 0 (normal-size raster); required, comes before xL
-    out.push((bytes_per_row % 256) as u8);
-    out.push((bytes_per_row / 256) as u8);
-    out.push((height % 256) as u8);
-    out.push((height / 256) as u8);
-    out.extend_from_slice(&band);
+
+    let width_dots = print_width.min(u16::MAX as usize) as u16;
+    let height_dots = height.min(u16::MAX as usize) as u16;
+
+    let mut payload = Vec::with_capacity(8 + raster.len());
+    payload.push(b'0'); // tone: monochrome
+    payload.push(1); // xm: normal density (1 dot per source pixel)
+    payload.push(1); // ym: normal density (1 dot per source pixel)
+    payload.push(b'1'); // colors: single color
+    payload.extend_from_slice(&width_dots.to_le_bytes());
+    payload.extend_from_slice(&height_dots.to_le_bytes());
+    payload.extend_from_slice(&raster);
+
+    let mut out = Vec::with_capacity(payload.len() + 16);
+    push_gs_paren_l(&mut out, 112, &payload); // store graphics data
+    push_gs_paren_l(&mut out, 50, &[]); // print the buffered graphics data
     out
+}
+
+/// `GS ( L pL pH m fn data` framing shared by all Function 112/50 calls.
+/// `m` is fixed at 0x30 for these two functions.
+fn push_gs_paren_l(out: &mut Vec<u8>, func: u8, data: &[u8]) {
+    let len = data.len() + 2; // + m byte + fn byte
+    out.extend_from_slice(&[GS, b'(', b'L']);
+    out.push((len % 256) as u8);
+    out.push((len / 256) as u8);
+    out.push(b'0'); // m
+    out.push(func);
+    out.extend_from_slice(data);
 }
 
 /// ESC p 0 t1 t2 — pulse drawer kick on pin 2.
@@ -180,28 +214,38 @@ mod tests {
 
     #[test]
     fn raster_single_row_paper_width_8() {
-        // 1 row of 8 black pixels at 8-dot paper width → 1 byte of 0xFF,
-        // m = 0, bytes-per-row = 1, yL = 1.
+        // 1 row of 8 black pixels at 8-dot paper width → GS ( L fn112
+        // (store: tone='0' xm=1 ym=1 colors='1' width=8 height=1 then the
+        // 1-byte raster) followed by fn50 (print, no payload).
         let img = vec![0xFF];
-        let out = raster_banded(&img, 8, 1, 8);
+        let out = raster_print(&img, 8, 1, 8);
         assert_eq!(
             out,
-            vec![0x1D, b'v', b'0', 0, 1, 0, 1, 0, 0xFF]
+            vec![
+                0x1D, b'(', b'L', 11, 0, b'0', 112,
+                b'0', 1, 1, b'1', 8, 0, 1, 0, 0xFF,
+                0x1D, b'(', b'L', 2, 0, b'0', 50,
+            ]
         );
     }
 
     #[test]
     fn raster_multi_row_single_command() {
         // 2 rows on a 16-dot paper, each row is 2 bytes of 0xFF. Must be
-        // ONE GS v 0 command with yL=2 (all rows), not two separate
-        // single-row commands — splitting into per-row commands triggers
-        // a separate print-engine feed cycle per row, which is both very
-        // slow and stacks up extra vertical gaps between rows.
+        // ONE fn112 store command covering all rows (yL/height=2), not
+        // per-row commands — GS v 0 called once per row used to turn a
+        // continuous image print into hundreds of separate print-engine
+        // feed cycles, which was both very slow and stacked up extra
+        // vertical gaps between rows.
         let img = vec![0xFF, 0xFF, 0xFF, 0xFF];
-        let out = raster_banded(&img, 16, 2, 16);
+        let out = raster_print(&img, 16, 2, 16);
         assert_eq!(
             out,
-            vec![0x1D, b'v', b'0', 0, 2, 0, 2, 0, 0xFF, 0xFF, 0xFF, 0xFF]
+            vec![
+                0x1D, b'(', b'L', 14, 0, b'0', 112,
+                b'0', 1, 1, b'1', 16, 0, 2, 0, 0xFF, 0xFF, 0xFF, 0xFF,
+                0x1D, b'(', b'L', 2, 0, b'0', 50,
+            ]
         );
     }
 
