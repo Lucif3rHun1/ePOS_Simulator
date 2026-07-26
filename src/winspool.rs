@@ -34,7 +34,11 @@ mod imp {
 
     // ---- raw FFI ----------------------------------------------------------
 
-    #[link(name = "winspool", kind = "raw-dylib")]
+    // The print spooler DLL is `winspool.drv` (not `winspool.dll`) — the
+    // `+verbatim` modifier stops rustc from appending its default `.dll`
+    // suffix, which otherwise produces an import for a nonexistent
+    // `winspool.dll` and fails to load at runtime (STATUS_DLL_NOT_FOUND).
+    #[link(name = "winspool.drv", kind = "raw-dylib", modifiers = "+verbatim")]
     extern "system" {
         fn OpenPrinterW(
             pPrinterName: *const u16,
