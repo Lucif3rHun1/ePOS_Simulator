@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build + Test (Windows MSVC)
-    runs-on: ubuntu-latest
+    runs-on: windows-latest   # VS Build Tools pre-installed, no linker surprises
     steps:
       - uses: actions/checkout@v4
 
@@ -29,8 +29,14 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Build release binary (Windows)
-        run: cargo build --release --target x86_64-pc-windows-msvc --locked
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          rustup show
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
 
       - name: Copy artifact to repo root
         run: cp target/x86_64-pc-windows-msvc/release/epos-emulator.exe epos-emulator.exe
@@ -47,24 +53,31 @@ jobs:
           retention-days: 14
 
       - name: Verify SOAP round-trip against the built binary
-        shell: bash
+        shell: pwsh
         run: |
-          set -euo pipefail
-          ./epos-emulator.exe --port 18080 &
-          SERVER_PID=$!
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            sleep 0.5
-            if curl -fsS http://127.0.0.1:18080/ >/dev/null; then break; fi
-          done
-          HTTP_CODE=$(curl -sS -o /tmp/r.xml -w "%{http_code}" \
-            -X POST "http://127.0.0.1:18080/cgi-bin/epos/service.cgi?devid=ci" \
-            -H 'Content-Type: text/xml; charset=utf-8' \
-            --data-binary @testdata/odoo-pos-test-print.xml)
-          echo "POST status: $HTTP_CODE"
-          cat /tmp/r.xml
-          test "$HTTP_CODE" = "200"
-          grep -q "success" /tmp/r.xml
-          kill $SERVER_PID 2>/dev/null || true
+          $ErrorActionPreference = "Stop"
+          $exe = "epos-emulator.exe"
+          $proc = Start-Process -FilePath ".$exe" -ArgumentList "--port","18080" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          try {
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:18080/" -TimeoutSec 2 | Out-Null
+                break
+              } catch { Start-Sleep -Milliseconds 500 }
+            }
+            $resp = Invoke-WebRequest -UseBasicParsing -Method POST `
+              -Uri "http://127.0.0.1:18080/cgi-bin/epos/service.cgi?devid=ci" `
+              -ContentType "text/xml; charset=utf-8" `
+              -InFile "testdata/odoo-pos-test-print.xml"
+            Write-Host "POST status: $($resp.StatusCode)"
+            Write-Host "Body: $($resp.Content)"
+            if ($resp.StatusCode -ne 200) { throw "expected 200, got $($resp.StatusCode)" }
+            if ($resp.Content -notmatch "success") { throw "expected success in body" }
+            Write-Host "OK: SOAP round-trip succeeded"
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Attach .exe to GitHub release (tag pushes only)
         if: startsWith(github.ref, 'refs/tags/v')
