@@ -436,32 +436,27 @@ fn is_qr_symbol_type(s: &str) -> bool {
     s.is_empty() || s.starts_with("qrcode")
 }
 
-fn apply_text_style(e: &quick_xml::events::BytesStart<'_>, out: &mut Vec<u8>) -> bool {
-    let mut applied = false;
-    if attr_str(e, "em").as_deref() == Some("true") {
-        out.extend_from_slice(&escpos::emphasis(true));
-        applied = true;
-    }
-    if attr_str(e, "ul").as_deref() == Some("true") {
-        out.extend_from_slice(&escpos::underline(1));
-        applied = true;
-    }
-    let width = attr_u8(e, "width");
-    let height = attr_u8(e, "height");
-    if width.is_some() || height.is_some() {
-        out.extend_from_slice(&escpos::char_size(width.unwrap_or(1), height.unwrap_or(1)));
-        applied = true;
-    }
-    applied
+// DISABLED 2026-07-26: a real receipt printed after this shipped came out
+// as dashes/dots across multiple separate bands — one per styled <text>
+// block — right after we started emitting ESC E / ESC - / GS ! for
+// em/ul/width/height. That pattern (repeated, once per text block) matches
+// these newly-introduced escape sequences far better than the earlier
+// ESC t n suspect (a one-time command, already ruled out). Rather than
+// guess again without hardware to verify against, styling emission is
+// disabled — attributes are still parsed (harmlessly) but no longer
+// produce bytes — until this is confirmed fixed or root-caused properly
+// with a verbose log from the actual failing print job.
+fn apply_text_style(e: &quick_xml::events::BytesStart<'_>, _out: &mut Vec<u8>) -> bool {
+    let _ = attr_str(e, "em");
+    let _ = attr_str(e, "ul");
+    let _ = attr_u8(e, "width");
+    let _ = attr_u8(e, "height");
+    false
 }
 
-/// Undo whatever [`apply_text_style`] applied: emphasis off, underline
-/// off, character size back to 1x1.
-fn reset_text_style(out: &mut Vec<u8>) {
-    out.extend_from_slice(&escpos::emphasis(false));
-    out.extend_from_slice(&escpos::underline(0));
-    out.extend_from_slice(&escpos::char_size(1, 1));
-}
+/// Undo whatever [`apply_text_style`] applied — currently a no-op since
+/// [`apply_text_style`] emits nothing (see the disabled-styling note there).
+fn reset_text_style(_out: &mut Vec<u8>) {}
 
 /// Best-effort validation that barcode `data` looks like valid content
 /// for the given `escpos` barcode type code — purely defensive, catching
@@ -668,23 +663,21 @@ mod tests {
         assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]), "got {:02x?}", out);
     }
 
-    /// Regression test: <text em="true" ul="true" width="2" height="3">
-    /// used to silently drop all four attributes and print flat,
-    /// unstyled text — escpos::emphasis/underline/char_size already
-    /// existed but were never called from here.
+    /// <text em="true" ul="true" width="2" height="3"> attributes are
+    /// parsed but currently produce NO styling bytes — emitting ESC E /
+    /// ESC - / GS ! from here caused real receipts to print as dashes
+    /// across multiple bands on real hardware (see the disabled-styling
+    /// note on apply_text_style). This asserts the current safe (inert)
+    /// behavior; flip it back to asserting the bytes ARE present once
+    /// re-enabled with a verified fix.
     #[test]
-    fn text_style_attributes_are_applied_and_reset() {
+    fn text_style_attributes_are_parsed_but_not_emitted() {
         let body = br#"<epos-print xmlns="x"><text em="true" ul="true" width="2" height="3">Bold</text></epos-print>"#;
         let out = translate(body, Options::default()).unwrap();
-        assert!(out.windows(3).any(|w| w == &[0x1B, b'E', 1]), "expected emphasis on: {:02x?}", out);
-        assert!(out.windows(3).any(|w| w == &[0x1B, b'-', 1]), "expected underline on: {:02x?}", out);
-        // width=2 -> high nibble 0x10, height=3 -> low nibble 0x02 -> 0x12
-        assert!(out.windows(3).any(|w| w == &[0x1D, b'!', 0x12]), "expected char_size(2,3): {:02x?}", out);
+        assert!(!out.windows(3).any(|w| w == &[0x1B, b'E', 1]), "styling is disabled, got emphasis: {:02x?}", out);
+        assert!(!out.windows(3).any(|w| w == &[0x1B, b'-', 1]), "styling is disabled, got underline: {:02x?}", out);
+        assert!(!out.windows(3).any(|w| w[0] == 0x1D && w[1] == b'!'), "styling is disabled, got char_size: {:02x?}", out);
         assert!(out.windows(4).any(|w| w == b"Bold"), "expected text content: {:02x?}", out);
-        // Reset back to defaults after the element closes.
-        assert!(out.windows(3).any(|w| w == &[0x1B, b'E', 0]), "expected emphasis off after: {:02x?}", out);
-        assert!(out.windows(3).any(|w| w == &[0x1B, b'-', 0]), "expected underline off after: {:02x?}", out);
-        assert!(out.windows(3).any(|w| w == &[0x1D, b'!', 0x00]), "expected char_size reset after: {:02x?}", out);
     }
 
     #[test]
