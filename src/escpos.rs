@@ -48,9 +48,12 @@ pub fn double_height(on: bool) -> Vec<u8> {
 }
 
 /// GS v 0 — raster bitmap, banded. Encodes a 1-bit monochrome image as
-/// a series of single-row GS v 0 commands. `img` is row-major; each row
-/// is `(width + 7) / 8` bytes with MSB = leftmost pixel. `paper_width`
-/// is the printer's paper width in dots (576 = 80mm, 384 = 58mm).
+/// a series of single-row GS v 0 commands: `1D 76 30 m xL xH yL yH
+/// d[0]..d[k]` (the `m` mode byte is required and comes before xL/xH —
+/// it is easy to mistake the ASCII '0' of the command name for it).
+/// `img` is row-major; each row is `(width + 7) / 8` bytes with MSB =
+/// leftmost pixel. `paper_width` is the printer's paper width in dots
+/// (576 = 80mm, 384 = 58mm).
 pub fn raster_banded(img: &[u8], width: usize, height: usize, paper_width: usize) -> Vec<u8> {
     if img.is_empty() || width == 0 || height == 0 {
         return Vec::new();
@@ -68,6 +71,7 @@ pub fn raster_banded(img: &[u8], width: usize, height: usize, paper_width: usize
             }
         }
         out.extend_from_slice(&[GS, b'v', b'0']);
+        out.push(0); // m = 0 (normal-size raster); required, comes before xL
         out.push((bytes_per_row % 256) as u8);
         out.push((bytes_per_row / 256) as u8);
         out.push(1); // yL = 1 row per band
@@ -168,12 +172,12 @@ mod tests {
     #[test]
     fn raster_single_row_paper_width_8() {
         // 1 row of 8 black pixels at 8-dot paper width → 1 byte of 0xFF,
-        // mode byte 0x30, bytes-per-row = 1, yL = 1.
+        // m = 0, bytes-per-row = 1, yL = 1.
         let img = vec![0xFF];
         let out = raster_banded(&img, 8, 1, 8);
         assert_eq!(
             out,
-            vec![0x1D, b'v', b'0', 1, 0, 1, 0, 0xFF]
+            vec![0x1D, b'v', b'0', 0, 1, 0, 1, 0, 0xFF]
         );
     }
 
@@ -182,12 +186,12 @@ mod tests {
         // 2 rows on a 16-dot paper, each row is 2 bytes of 0xFF.
         let img = vec![0xFF, 0xFF, 0xFF, 0xFF];
         let out = raster_banded(&img, 16, 2, 16);
-        // Each band: GS v '0' xL xH yL yH data
+        // Each band: GS v '0' m xL xH yL yH data
         assert_eq!(
             out,
             vec![
-                0x1D, b'v', b'0', 2, 0, 1, 0, 0xFF, 0xFF,
-                0x1D, b'v', b'0', 2, 0, 1, 0, 0xFF, 0xFF,
+                0x1D, b'v', b'0', 0, 2, 0, 1, 0, 0xFF, 0xFF,
+                0x1D, b'v', b'0', 0, 2, 0, 1, 0, 0xFF, 0xFF,
             ]
         );
     }
