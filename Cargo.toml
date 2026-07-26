@@ -52,11 +52,9 @@ anyhow = "1"
 parking_lot = "0.12"
 
 # Windows-only FFI for winspool.
-# windows-targets is a separate crate that emits #[link(name="winspool")]
-# directives; windows-sys generates the link!() macros but doesn't depend
-# on windows-targets itself, so we have to add it explicitly.
+# build.rs emits `cargo:rustc-link-lib=winspool` directly — that handles
+# the import-library link directive without needing windows-targets.
 [target.'cfg(windows)'.dependencies]
-windows-targets = "0.52"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",     # gates PRINTER_DEFAULTSW + OpenPrinterW
