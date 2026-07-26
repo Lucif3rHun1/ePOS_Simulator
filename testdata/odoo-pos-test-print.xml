@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+    <s:Body>
+        <epos-print xmlns="http://www.epson-pos.com/schemas/2011/03/epos-print">
+            <feed line="1" />
+            <text align="center">Test print for printer Printer&#10;</text>
+            <feed line="3" />
+            <cut type="feed" />
+        </epos-print>
+    </s:Body>
+</s:Envelope>

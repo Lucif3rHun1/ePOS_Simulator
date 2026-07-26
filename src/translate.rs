@@ -85,7 +85,20 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                         let n = attr_u8(&e, "line").unwrap_or(1);
                         out.extend_from_slice(&escpos::feed(n));
                     }
-                    "cut" => out.extend_from_slice(&escpos::cut(0)),
+                    "cut" => {
+                        // Epson ePOS-Print XML cut semantics:
+                        //   <cut/>                -> partial cut (GS V m=1)
+                        //   <cut type="feed"/>    -> feed N lines + partial cut
+                        //   <cut type="no-feed"/> -> partial cut, no feed
+                        //   <cut type="full"/>    -> full cut (GS V m=0)
+                        let kind = attr_str(&e, "type").unwrap_or_default();
+                        let feed_lines: u8 = if kind == "feed" { 3 } else { 0 };
+                        let m: u8 = if kind == "full" { 0 } else { 1 };
+                        if feed_lines > 0 {
+                            out.extend_from_slice(&escpos::feed(feed_lines));
+                        }
+                        out.extend_from_slice(&escpos::cut(m));
+                    }
                     "drawer" if opts.allow_drawer => {
                         out.extend_from_slice(&escpos::drawer(100, 250));
                     }
@@ -235,7 +248,7 @@ fn translate_inner(body: &[u8], opts: Options) -> Result<Vec<u8>, TranslateError
                     }
                     (Ctx::Text { .. }, "text") => {
                         // flush text
-                        let trimmed = pending_text.trim();
+                        let trimmed = pending_text.trim_start();
                         if !trimmed.is_empty() {
                             out.extend_from_slice(trimmed.as_bytes());
                         }
@@ -342,7 +355,7 @@ mod tests {
         assert_eq!(&out[..2], &[0x1B, b'@']);
         assert!(out.windows(5).any(|w| w == b"Hello"), "expected Hello in out: {:02x?}", out);
         assert!(out.windows(3).any(|w| w == &[0x1B, b'd', 1]), "expected Feed(1) in out: {:02x?}", out);
-        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 0]), "expected Cut(0) in out: {:02x?}", out);
+        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]), "expected PartialCut GS V 1 in out: {:02x?}", out);
     }
 
     #[test]
@@ -379,6 +392,86 @@ mod tests {
         let out = translate(body, Options::default()).unwrap();
         assert!(out.windows(6).any(|w| w == b"Line 1"), "got {:02x?}", out);
         assert!(out.windows(6).any(|w| w == b"Line 2"), "got {:02x?}", out);
-        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 0]), "got {:02x?}", out);
+        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]), "got {:02x?}", out);
     }
 }
+
+    /// End-to-end test against the exact payload Odoo POS sends when the user
+    /// clicks "Test" on a Printer config (Setup > Printer > Test button).
+    /// Fixture: testdata/odoo-pos-test-print.xml
+    #[test]
+    fn translates_odoo_pos_test_print() {
+        const PAYLOAD: &[u8] = include_bytes!("../testdata/odoo-pos-test-print.xml");
+        let out = translate(PAYLOAD, Options::default()).unwrap();
+
+        // 1. Init at the start.
+        assert_eq!(&out[..2], &[0x1B, b'@'], "init: {:02x?}", out);
+
+        // 2. ESC a 1 (align center) for <text align="center">.
+        assert!(
+            out.windows(3).any(|w| w == &[0x1B, b'a', 1]),
+            "expected ESC a 1 (center): {:02x?}", out
+        );
+
+        // 3. The text content includes the literal `&#10;` (newline) so we
+        //    should see "Test print for printer Printer\n" in the output.
+        let text = b"Test print for printer Printer\n";
+        assert!(
+            out.windows(text.len()).any(|w| w == text),
+            "expected {:?} in out: {:02x?}", std::str::from_utf8(text).unwrap(), out
+        );
+
+        // 4. ESC d 1 (feed 1 line) from <feed line="1"/>.
+        assert!(
+            out.windows(3).any(|w| w == &[0x1B, b'd', 1]),
+            "expected Feed(1): {:02x?}", out
+        );
+
+        // 5. ESC d 3 (feed 3 lines) from <feed line="3"/>.
+        assert!(
+            out.windows(3).any(|w| w == &[0x1B, b'd', 3]),
+            "expected Feed(3): {:02x?}", out
+        );
+
+        // 6. GS V m=1 (PARTIAL cut, NOT GS V 0 = full cut).
+        //    This was the bug: <cut type="feed"/> was emitting GS V 0 (full).
+        assert!(
+            out.windows(3).any(|w| w == &[0x1D, b'V', 1]),
+            "expected PartialCut GS V 1: {:02x?}", out
+        );
+        assert!(
+            !out.windows(3).any(|w| w == &[0x1D, b'V', 0]),
+            "must NOT emit FullCut GS V 0 for type=feed: {:02x?}", out
+        );
+
+        // 7. ESC a 0 (align reset) must come AFTER the text.
+        let center_pos = find_subseq(&out, &[0x1B, b'a', 1]).unwrap();
+        let reset_pos = find_subseq(&out, &[0x1B, b'a', 0]).unwrap();
+        assert!(reset_pos > center_pos, "align reset must come after align center");
+    }
+
+    #[test]
+    fn cut_type_no_feed_emits_partial_only() {
+        let body = br#"<epos-print xmlns="x"><cut type="no-feed"/></epos-print>"#;
+        let out = translate(body, Options::default()).unwrap();
+        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]));
+        assert!(!out.windows(3).any(|w| w[0] == 0x1B && w[1] == b'd'));
+    }
+
+    #[test]
+    fn cut_type_full_emits_gs_v_0() {
+        let body = br#"<epos-print xmlns="x"><cut type="full"/></epos-print>"#;
+        let out = translate(body, Options::default()).unwrap();
+        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 0]));
+    }
+
+    #[test]
+    fn cut_default_is_partial() {
+        let body = br#"<epos-print xmlns="x"><cut/></epos-print>"#;
+        let out = translate(body, Options::default()).unwrap();
+        assert!(out.windows(3).any(|w| w == &[0x1D, b'V', 1]));
+    }
+
+    fn find_subseq(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
