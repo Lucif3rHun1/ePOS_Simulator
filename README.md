@@ -465,3 +465,4 @@ v2.x is a clean **Rust port** of the original Go project (`v1.x`).
 ## License
 
 MIT — same as the Go predecessor.
+2026-07-26T08:29:17Z

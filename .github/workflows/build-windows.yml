@@ -14,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build + Test (Windows MSVC)
-    runs-on: windows-latest   # VS Build Tools pre-installed, no linker surprises
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -29,16 +29,39 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Show toolchain
+      - name: Show toolchain + MSVC env
+        shell: bash
         run: |
-          rustc --version
-          cargo --version
-          rustup show
+          echo "=== rustc ===" && rustc --version
+          echo "=== cargo ===" && cargo --version
+          echo "=== rustup ===" && rustup show
+          echo "=== link.exe ===" && (command -v link.exe || which link.exe || echo "link.exe NOT FOUND")
+          echo "=== cl.exe ===" && (command -v cl.exe || which cl.exe || echo "cl.exe NOT FOUND")
+          echo "=== MSVC env ===" && (cmd //c "call \"C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat\" >nul 2>&1 && set" 2>/dev/null | grep -E "^(VCINSTALLDIR|VCToolsInstallDir|WindowsSdkDir|UCRTVersion)=" | head -10) || echo "vcvars64.bat not callable from this path"
 
-      - name: Build release binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
+      - name: Build release binary (with log capture)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release --target x86_64-pc-windows-msvc -v 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          echo "cargo exit status: $status"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::cargo build failed (status=$status) — see build.log artifact"
+            exit "$status"
+          fi
+
+      - name: Always-upload build log (success or fail)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Copy artifact to repo root
+        shell: bash
         run: cp target/x86_64-pc-windows-msvc/release/epos-emulator.exe epos-emulator.exe
 
       - name: Run tests (host arch)
