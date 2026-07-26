@@ -118,8 +118,20 @@ jobs:
             Write-Host "POST status: $($resp.StatusCode)"
             Write-Host "Body: $($resp.Content)"
             if ($resp.StatusCode -ne 200) { throw "expected 200, got $($resp.StatusCode)" }
-            if ($resp.Content -notmatch "success") { throw "expected success in body" }
-            Write-Host "OK: SOAP round-trip succeeded"
+            if ($resp.Content -notmatch '<response\b') { throw "expected an epos-print <response> element in body" }
+            # The CI runner has no physical printer installed, so the spooler
+            # call itself is expected to fail with OpenPrinter — that still
+            # proves the XML/SOAP round-trip (parse -> translate -> respond)
+            # worked correctly. A real success="true" is also fine (e.g. if
+            # a default printer somehow exists). Anything else (XML parse
+            # error, translate error, malformed response) is a real bug.
+            if ($resp.Content -match 'success="true"') {
+              Write-Host "OK: SOAP round-trip succeeded (printed)"
+            } elseif ($resp.Content -match 'OpenPrinter failed|not available on this platform') {
+              Write-Host "OK: SOAP round-trip succeeded (no physical printer on CI runner; XML parsed/translated correctly)"
+            } else {
+              throw "unexpected response body: $($resp.Content)"
+            }
           } finally {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
